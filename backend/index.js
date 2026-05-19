@@ -11,6 +11,7 @@ const sitesRouter = require('./src/api/sites');
 const accountSiteLinksRouter = require('./src/api/account-site-links');
 const campaignsRouter = require('./src/api/campaigns');
 const dashboardRouter = require('./src/api/dashboard');
+const rulesRouter = require('./src/api/rules');
 const syncLogsRouter = require('./src/api/sync-logs');
 const scheduler = require('./src/scheduler/cron');
 
@@ -28,6 +29,7 @@ app.use('/api/sites', requireAuth, sitesRouter);
 app.use('/api/account-site-links', requireAuth, accountSiteLinksRouter);
 app.use('/api/campaigns', requireAuth, campaignsRouter);
 app.use('/api/dashboard', requireAuth, dashboardRouter);
+app.use('/api/rules', requireAuth, rulesRouter);
 app.use('/api/sync-logs', requireAuth, syncLogsRouter);
 
 const schedulerInfo = scheduler.start();

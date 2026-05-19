@@ -150,6 +150,39 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_daily_metrics_user_date ON daily_metrics(user_id, date DESC);
   CREATE INDEX IF NOT EXISTS idx_daily_metrics_campaign ON daily_metrics(user_id, campaign_id, date DESC);
 
+  CREATE TABLE IF NOT EXISTS rules_config (
+    user_id INTEGER PRIMARY KEY,
+    -- Core ROI thresholds
+    min_roi_pct REAL NOT NULL DEFAULT 10,
+    max_loss_roi_pct REAL NOT NULL DEFAULT -20,
+    boost_roi_pct REAL NOT NULL DEFAULT 40,
+    min_spend_threshold REAL NOT NULL DEFAULT 50,
+    budget_increase_pct REAL NOT NULL DEFAULT 20,
+    revenue_share_pct REAL NOT NULL DEFAULT 6.5,
+    -- Automation: time windows (days)
+    auto_analysis_days INTEGER NOT NULL DEFAULT 15,
+    auto_scale_interval_days INTEGER NOT NULL DEFAULT 3,
+    auto_stoploss_days INTEGER NOT NULL DEFAULT 7,
+    auto_cpa_review_days INTEGER NOT NULL DEFAULT 3,
+    auto_standby_enter_days INTEGER NOT NULL DEFAULT 7,
+    auto_standby_max_days INTEGER NOT NULL DEFAULT 14,
+    -- Automation: thresholds
+    auto_scale_min_roi REAL NOT NULL DEFAULT 30,
+    auto_scale_budget_pct REAL NOT NULL DEFAULT 20,
+    auto_stoploss_min_roi REAL NOT NULL DEFAULT -20,
+    auto_stoploss_min_cost REAL NOT NULL DEFAULT 0,
+    auto_cpa_up_pct REAL NOT NULL DEFAULT 10,
+    auto_cpa_down_pct REAL NOT NULL DEFAULT 10,
+    auto_standby_roi_low REAL NOT NULL DEFAULT 1,
+    auto_standby_roi_high REAL NOT NULL DEFAULT 10,
+    auto_standby_exit_roi REAL NOT NULL DEFAULT 10,
+    -- Execution mode
+    auto_pause_enabled INTEGER NOT NULL DEFAULT 1,
+    auto_boost_enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS sync_logs (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,

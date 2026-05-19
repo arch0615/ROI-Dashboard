@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 const NAV = [
   { href: "/" as const, label: "Visão Geral" },
   { href: "/integrations" as const, label: "Integrações" },
+  { href: "/rules" as const, label: "Regras" },
 ];
 
 export function AppHeader({ username }: { username: string }) {
