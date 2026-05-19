@@ -4,6 +4,7 @@ const cookieParser = require('cookie-parser');
 require('./src/db/database');
 
 const healthRouter = require('./src/api/health');
+const authRouter = require('./src/api/auth');
 const scheduler = require('./src/scheduler/cron');
 
 const app = express();
@@ -11,6 +12,7 @@ app.use(express.json());
 app.use(cookieParser());
 
 app.use('/api/health', healthRouter);
+app.use('/api/auth', authRouter);
 
 const schedulerInfo = scheduler.start();
 console.log('[startup] Scheduler:', schedulerInfo);
