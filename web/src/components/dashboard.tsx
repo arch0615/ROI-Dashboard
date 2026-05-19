@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { fmtCurrency, fmtPercent, fmtNumber, fmtDecimal } from "@/lib/format";
 import { FilterBar, EMPTY_FILTERS, type DashboardFilters } from "./filter-bar";
 import { MetricCard } from "./metric-card";
+import { AppHeader } from "./app-header";
 
 type Overview = {
   range: { from: string | null; to: string | null };
@@ -41,25 +42,7 @@ export function Dashboard({ username }: { username: string }) {
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
-      <header className="border-b border-zinc-800 bg-zinc-900/50 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-          <h1 className="text-lg font-semibold">ad-genius</h1>
-          <div className="text-xs text-zinc-400">
-            {username} ·{" "}
-            <a
-              href="/api/auth/logout"
-              onClick={async (e) => {
-                e.preventDefault();
-                await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
-                window.location.href = "/login";
-              }}
-              className="hover:text-zinc-100 underline-offset-4 hover:underline"
-            >
-              Sair
-            </a>
-          </div>
-        </div>
-      </header>
+      <AppHeader username={username} />
 
       <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
         <FilterBar filters={filters} onChange={setFilters} />
