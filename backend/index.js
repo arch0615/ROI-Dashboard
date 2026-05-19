@@ -5,7 +5,12 @@ require('./src/db/database');
 
 const healthRouter = require('./src/api/health');
 const authRouter = require('./src/api/auth');
+const googleAccountsRouter = require('./src/api/google-accounts');
+const gamAccountsRouter = require('./src/api/gam-accounts');
+const syncLogsRouter = require('./src/api/sync-logs');
 const scheduler = require('./src/scheduler/cron');
+
+const { requireAuth } = authRouter;
 
 const app = express();
 app.use(express.json());
@@ -13,6 +18,9 @@ app.use(cookieParser());
 
 app.use('/api/health', healthRouter);
 app.use('/api/auth', authRouter);
+app.use('/api/google-accounts', requireAuth, googleAccountsRouter);
+app.use('/api/gam-accounts', requireAuth, gamAccountsRouter);
+app.use('/api/sync-logs', requireAuth, syncLogsRouter);
 
 const schedulerInfo = scheduler.start();
 console.log('[startup] Scheduler:', schedulerInfo);
