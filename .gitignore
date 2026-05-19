@@ -1,0 +1,31 @@
+node_modules/
+.env
+.env.local
+.env.*.local
+
+# build output
+.next/
+dist/
+build/
+out/
+
+# sqlite
+*.db
+*.db-shm
+*.db-wal
+data.db*
+
+# editor
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# logs
+*.log
+npm-debug.log*
+logs/
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts.bak
