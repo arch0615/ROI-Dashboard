@@ -7,6 +7,9 @@ const healthRouter = require('./src/api/health');
 const authRouter = require('./src/api/auth');
 const googleAccountsRouter = require('./src/api/google-accounts');
 const gamAccountsRouter = require('./src/api/gam-accounts');
+const sitesRouter = require('./src/api/sites');
+const campaignsRouter = require('./src/api/campaigns');
+const dashboardRouter = require('./src/api/dashboard');
 const syncLogsRouter = require('./src/api/sync-logs');
 const scheduler = require('./src/scheduler/cron');
 
@@ -20,6 +23,9 @@ app.use('/api/health', healthRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/google-accounts', requireAuth, googleAccountsRouter);
 app.use('/api/gam-accounts', requireAuth, gamAccountsRouter);
+app.use('/api/sites', requireAuth, sitesRouter);
+app.use('/api/campaigns', requireAuth, campaignsRouter);
+app.use('/api/dashboard', requireAuth, dashboardRouter);
 app.use('/api/sync-logs', requireAuth, syncLogsRouter);
 
 const schedulerInfo = scheduler.start();

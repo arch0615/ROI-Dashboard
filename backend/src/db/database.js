@@ -66,6 +66,32 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_gam_accounts_user ON gam_accounts(user_id);
 
+  CREATE TABLE IF NOT EXISTS sites (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    domain TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, name),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_sites_user ON sites(user_id);
+
+  CREATE TABLE IF NOT EXISTS account_site_links (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    site_id TEXT NOT NULL,
+    google_account_id TEXT,
+    gam_account_id TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE,
+    FOREIGN KEY (google_account_id) REFERENCES google_accounts(id) ON DELETE CASCADE,
+    FOREIGN KEY (gam_account_id) REFERENCES gam_accounts(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_links_site ON account_site_links(site_id);
+  CREATE INDEX IF NOT EXISTS idx_links_google ON account_site_links(google_account_id);
+
   CREATE TABLE IF NOT EXISTS campaigns (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,
