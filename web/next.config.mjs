@@ -2,9 +2,7 @@
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
-  experimental: {
-    typedRoutes: true,
-  },
+  typedRoutes: true,
   // In dev, proxy /api/* to the backend so cookies are same-origin without
   // CORS. In production, Nginx does the same thing, so this rewrite is a
   // no-op behind the reverse proxy.
