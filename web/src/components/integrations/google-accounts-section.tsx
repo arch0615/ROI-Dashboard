@@ -32,6 +32,13 @@ export function GoogleAccountsSection() {
     },
   });
 
+  const connect = useMutation({
+    mutationFn: () => api<{ url: string }>("/api/oauth/google/start", { method: "POST" }),
+    onSuccess: ({ url }) => {
+      window.location.href = url;
+    },
+  });
+
   const del = useMutation({
     mutationFn: (id: string) =>
       api(`/api/google-accounts/${id}`, { method: "DELETE" }),
@@ -102,8 +109,28 @@ export function GoogleAccountsSection() {
   return (
     <SectionCard
       title="Contas Google Ads"
-      subtitle="OAuth completo chega no M3. Por enquanto, cole o refresh_token manualmente — ele é criptografado em repouso (AES-256-GCM)."
+      subtitle="Conecte via OAuth para autorizar a leitura das suas contas. Ou, se preferir, cole um refresh_token manualmente — em qualquer caso ele é criptografado em repouso (AES-256-GCM)."
     >
+      <div className="flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+        <div className="flex-1 text-sm">
+          <p className="font-medium">Autorizar via Google</p>
+          <p className="text-xs text-zinc-500">
+            Redireciona para a tela de consentimento do Google. Após autorizar,
+            todas as contas acessíveis são adicionadas automaticamente.
+          </p>
+        </div>
+        <button
+          type="button"
+          className={buttonClass}
+          onClick={() => connect.mutate()}
+          disabled={connect.isPending}
+        >
+          {connect.isPending ? "Redirecionando..." : "Conectar via Google"}
+        </button>
+      </div>
+      {connect.isError && (
+        <p className="text-sm text-rose-400">{(connect.error as Error).message}</p>
+      )}
       <form
         onSubmit={(e) => {
           e.preventDefault();

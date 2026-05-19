@@ -5,6 +5,7 @@ require('./src/db/database');
 
 const healthRouter = require('./src/api/health');
 const authRouter = require('./src/api/auth');
+const oauthRouter = require('./src/api/oauth');
 const googleAccountsRouter = require('./src/api/google-accounts');
 const gamAccountsRouter = require('./src/api/gam-accounts');
 const sitesRouter = require('./src/api/sites');
@@ -24,6 +25,11 @@ app.use(cookieParser());
 
 app.use('/api/health', healthRouter);
 app.use('/api/auth', authRouter);
+// OAuth /start is auth-protected at the route level; /callback is
+// intentionally public because the browser arrives from accounts.google.com
+// without our session cookie depending on SameSite policy.
+app.use('/api/oauth/google/start', requireAuth);
+app.use('/api/oauth', oauthRouter);
 app.use('/api/google-accounts', requireAuth, googleAccountsRouter);
 app.use('/api/gam-accounts', requireAuth, gamAccountsRouter);
 app.use('/api/sites', requireAuth, sitesRouter);

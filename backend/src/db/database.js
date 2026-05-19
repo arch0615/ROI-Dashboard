@@ -31,6 +31,16 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 
+  CREATE TABLE IF NOT EXISTS oauth_states (
+    state TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    expires_at DATETIME NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_oauth_states_expires ON oauth_states(expires_at);
+
   -- Data tables mirror the original Supabase schema. TEXT UUID PKs so IDs
   -- round-trip during M4 data migration. JSON columns stored as TEXT.
 

@@ -9,6 +9,8 @@
 //   API_ERROR       -> 502 (Google Ads API call failed)
 
 const OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const OAUTH_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
+const ADS_API_SCOPE = 'https://www.googleapis.com/auth/adwords';
 const ADS_API_BASE = 'https://googleads.googleapis.com/v18';
 
 function requireConfig() {
@@ -23,6 +25,72 @@ function requireConfig() {
     throw err;
   }
   return { clientId, clientSecret, developerToken };
+}
+
+function requireOAuthConfig() {
+  const { clientId, clientSecret } = requireConfig();
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI;
+  if (!redirectUri) {
+    const err = new Error(
+      'GOOGLE_REDIRECT_URI não configurada. Defina a URL completa do callback (ex: https://seu-dominio/api/oauth/google/callback).',
+    );
+    err.code = 'NOT_CONFIGURED';
+    throw err;
+  }
+  return { clientId, clientSecret, redirectUri };
+}
+
+// Builds the URL that the browser must visit to begin the consent flow.
+// access_type=offline + prompt=consent guarantees a refresh_token even
+// for users who have authorized this client before.
+function buildAuthUrl({ state }) {
+  const { clientId, redirectUri } = requireOAuthConfig();
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: ADS_API_SCOPE,
+    access_type: 'offline',
+    include_granted_scopes: 'true',
+    prompt: 'consent',
+    state,
+  });
+  return `${OAUTH_AUTH_URL}?${params.toString()}`;
+}
+
+async function exchangeCode({ code }) {
+  const { clientId, clientSecret, redirectUri } = requireOAuthConfig();
+  const res = await fetch(OAUTH_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      code,
+      redirect_uri: redirectUri,
+      grant_type: 'authorization_code',
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(
+      `Falha ao trocar code por tokens: ${data.error ?? res.status}${data.error_description ? ` (${data.error_description})` : ''}`,
+    );
+    err.code = 'TOKEN_EXCHANGE';
+    throw err;
+  }
+  if (!data.refresh_token) {
+    const err = new Error(
+      'Google não retornou refresh_token. Verifique se o app está em modo de produção e revogue o acesso anterior em https://myaccount.google.com/permissions antes de tentar novamente.',
+    );
+    err.code = 'NO_REFRESH_TOKEN';
+    throw err;
+  }
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token,
+    expiresIn: data.expires_in,
+  };
 }
 
 async function getAccessToken(refreshToken) {
@@ -109,6 +177,9 @@ async function listAccessibleCustomers(refreshToken) {
 
 module.exports = {
   requireConfig,
+  requireOAuthConfig,
+  buildAuthUrl,
+  exchangeCode,
   getAccessToken,
   listAccessibleCustomers,
   adsSearch,
