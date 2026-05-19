@@ -1,138 +1,100 @@
 const express = require('express');
-const crypto = require('crypto');
-const db = require('../db/database');
 const { syncGoogleAdsAccount } = require('../sync/google-ads');
 const { syncGamAccount } = require('../sync/gam');
 const { rolloverDailyMetrics } = require('../sync/rollup');
+const { withSyncLog } = require('../sync/with-log');
+const { runDailySync } = require('../scheduler/jobs');
 
 const router = express.Router();
 
-// POST /api/sync/google-ads/:account_id
-//   body: { date_preset?, from?, to? }
-// Always writes a row to sync_logs whether the run succeeds or errors.
-// On error, returns the error code mapping the same way as /customers
-// (NOT_CONFIGURED -> 503, TOKEN_REFRESH/API_ERROR -> 502).
-router.post('/google-ads/:account_id', async (req, res) => {
-  const { account_id } = req.params;
-  const { date_preset, from, to } = req.body || {};
-
-  const logId = crypto.randomUUID();
-  db.prepare(
-    `INSERT INTO sync_logs (id, user_id, source, status, started_at)
-     VALUES (?, ?, 'google-ads', 'running', CURRENT_TIMESTAMP)`,
-  ).run(logId, req.user.id);
-
-  try {
-    const result = await syncGoogleAdsAccount({
-      userId: req.user.id,
-      accountId: account_id,
-      datePreset: date_preset,
-      from,
-      to,
-    });
-    db.prepare(
-      `UPDATE sync_logs
-          SET status = 'ok',
-              records_processed = ?,
-              finished_at = CURRENT_TIMESTAMP
-        WHERE id = ?`,
-    ).run(result.metric_rows, logId);
-    res.json({ ok: true, log_id: logId, ...result });
-  } catch (err) {
-    db.prepare(
-      `UPDATE sync_logs
-          SET status = 'error',
-              error = ?,
-              finished_at = CURRENT_TIMESTAMP
-        WHERE id = ?`,
-    ).run(err.message, logId);
-
-    if (err.code === 'NOT_FOUND') return res.status(404).json({ error: err.message });
-    if (err.code === 'NO_TOKEN') return res.status(400).json({ error: err.message });
-    if (err.code === 'NOT_CONFIGURED') return res.status(503).json({ error: err.message });
-    if (err.code === 'TOKEN_REFRESH' || err.code === 'API_ERROR') {
-      return res.status(502).json({ error: err.message });
-    }
-    throw err;
+function mapErrorToStatus(err) {
+  if (err.code === 'NOT_FOUND') return 404;
+  if (err.code === 'NO_TOKEN' || err.code === 'BAD_SA_JSON' || err.code === 'BAD_PRIVATE_KEY') {
+    return 400;
   }
-});
+  if (err.code === 'NOT_CONFIGURED') return 503;
+  if (err.code === 'TOKEN_REFRESH' || err.code === 'API_ERROR') return 502;
+  return null;
+}
 
-// Re-runs the rollup without hitting Google. Useful after the user
-// changes revenue_share_pct or fixes account_site_links — daily_metrics
-// will recompute revenue/profit/roi/roas/ecpm in place.
-router.post('/rollup', (req, res) => {
-  const { from, to } = req.body || {};
-  const logId = crypto.randomUUID();
-  db.prepare(
-    `INSERT INTO sync_logs (id, user_id, source, status, started_at)
-     VALUES (?, ?, 'rollup', 'running', CURRENT_TIMESTAMP)`,
-  ).run(logId, req.user.id);
+router.post('/google-ads/:account_id', async (req, res) => {
+  const { date_preset, from, to } = req.body || {};
   try {
-    const result = rolloverDailyMetrics({ userId: req.user.id, from, to });
-    db.prepare(
-      `UPDATE sync_logs
-          SET status = 'ok',
-              records_processed = ?,
-              finished_at = CURRENT_TIMESTAMP
-        WHERE id = ?`,
-    ).run(result.rows_updated, logId);
-    res.json({ ok: true, log_id: logId, ...result });
+    const result = await withSyncLog({
+      userId: req.user.id,
+      source: 'google-ads',
+      fn: async () => {
+        const r = await syncGoogleAdsAccount({
+          userId: req.user.id,
+          accountId: req.params.account_id,
+          datePreset: date_preset,
+          from,
+          to,
+        });
+        return { ...r, records_processed: r.metric_rows };
+      },
+    });
+    res.json({ ok: true, ...result });
   } catch (err) {
-    db.prepare(
-      `UPDATE sync_logs
-          SET status = 'error',
-              error = ?,
-              finished_at = CURRENT_TIMESTAMP
-        WHERE id = ?`,
-    ).run(err.message, logId);
+    const status = mapErrorToStatus(err);
+    if (status != null) return res.status(status).json({ error: err.message });
     throw err;
   }
 });
 
 router.post('/gam/:account_id', async (req, res) => {
-  const { account_id } = req.params;
   const { date_preset, from, to } = req.body || {};
-
-  const logId = crypto.randomUUID();
-  db.prepare(
-    `INSERT INTO sync_logs (id, user_id, source, status, started_at)
-     VALUES (?, ?, 'gam', 'running', CURRENT_TIMESTAMP)`,
-  ).run(logId, req.user.id);
-
   try {
-    const result = await syncGamAccount({
+    const result = await withSyncLog({
       userId: req.user.id,
-      accountId: account_id,
-      datePreset: date_preset,
-      from,
-      to,
+      source: 'gam',
+      fn: async () => {
+        const r = await syncGamAccount({
+          userId: req.user.id,
+          accountId: req.params.account_id,
+          datePreset: date_preset,
+          from,
+          to,
+        });
+        return { ...r, records_processed: r.rows_written };
+      },
     });
-    db.prepare(
-      `UPDATE sync_logs
-          SET status = 'ok',
-              records_processed = ?,
-              finished_at = CURRENT_TIMESTAMP
-        WHERE id = ?`,
-    ).run(result.rows_written, logId);
-    res.json({ ok: true, log_id: logId, ...result });
+    res.json({ ok: true, ...result });
   } catch (err) {
-    db.prepare(
-      `UPDATE sync_logs
-          SET status = 'error',
-              error = ?,
-              finished_at = CURRENT_TIMESTAMP
-        WHERE id = ?`,
-    ).run(err.message, logId);
-
-    if (err.code === 'NOT_FOUND') return res.status(404).json({ error: err.message });
-    if (err.code === 'NO_TOKEN') return res.status(400).json({ error: err.message });
-    if (err.code === 'BAD_SA_JSON' || err.code === 'BAD_PRIVATE_KEY') {
-      return res.status(400).json({ error: err.message });
-    }
-    if (err.code === 'TOKEN_REFRESH' || err.code === 'API_ERROR') {
-      return res.status(502).json({ error: err.message });
-    }
+    const status = mapErrorToStatus(err);
+    if (status != null) return res.status(status).json({ error: err.message });
     throw err;
+  }
+});
+
+router.post('/rollup', async (req, res) => {
+  const { from, to } = req.body || {};
+  try {
+    const result = await withSyncLog({
+      userId: req.user.id,
+      source: 'rollup',
+      fn: () => {
+        const r = rolloverDailyMetrics({ userId: req.user.id, from, to });
+        return { ...r, records_processed: r.rows_updated };
+      },
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    const status = mapErrorToStatus(err);
+    if (status != null) return res.status(status).json({ error: err.message });
+    throw err;
+  }
+});
+
+// Runs every Ads + GAM sync for THIS user with date_preset=YESTERDAY,
+// then a rollup. Mirrors what the daily cron does — useful for "kick
+// it now" after the user adds their first account.
+router.post('/run-all', async (req, res) => {
+  try {
+    const summary = await runDailySync({ userId: req.user.id, datePreset: 'YESTERDAY' });
+    res.json({ ok: true, ...summary });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
