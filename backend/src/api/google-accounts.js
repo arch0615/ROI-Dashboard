@@ -1,7 +1,8 @@
 const express = require('express');
 const crypto = require('crypto');
 const db = require('../db/database');
-const { encrypt } = require('../lib/crypto');
+const { encrypt, decrypt } = require('../lib/crypto');
+const googleAds = require('../lib/google-ads');
 
 const router = express.Router();
 
@@ -61,6 +62,38 @@ router.delete('/:id', (req, res) => {
     .run(req.params.id, req.user.id);
   if (info.changes === 0) return res.status(404).json({ error: 'Não encontrado' });
   res.status(204).end();
+});
+
+// Validates the saved refresh_token by calling Google Ads
+// listAccessibleCustomers. Returns the list of customer IDs the OAuth
+// token can see — useful both for "test connection" and as a starting
+// point for picking which sub-accounts to sync.
+router.get('/:id/customers', async (req, res) => {
+  const row = db
+    .prepare(
+      `SELECT refresh_token_enc, refresh_token_iv, refresh_token_tag
+         FROM google_accounts WHERE id = ? AND user_id = ?`,
+    )
+    .get(req.params.id, req.user.id);
+  if (!row) return res.status(404).json({ error: 'Conta não encontrada' });
+  if (!row.refresh_token_enc) {
+    return res.status(400).json({ error: 'Conta sem refresh_token salvo' });
+  }
+  const refreshToken = decrypt({
+    ciphertext: row.refresh_token_enc,
+    iv: row.refresh_token_iv,
+    tag: row.refresh_token_tag,
+  });
+  try {
+    const customers = await googleAds.listAccessibleCustomers(refreshToken);
+    res.json({ customers });
+  } catch (err) {
+    if (err.code === 'NOT_CONFIGURED') return res.status(503).json({ error: err.message });
+    if (err.code === 'TOKEN_REFRESH' || err.code === 'API_ERROR') {
+      return res.status(502).json({ error: err.message });
+    }
+    throw err;
+  }
 });
 
 module.exports = router;
