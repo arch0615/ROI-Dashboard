@@ -62,6 +62,10 @@ db.exec(`
     network_code TEXT NOT NULL,
     account_name TEXT,
     service_account_email TEXT,
+    service_account_json_enc TEXT,
+    service_account_json_iv TEXT,
+    service_account_json_tag TEXT,
+    currency TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     last_synced_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -118,6 +122,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS placements (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,
+    gam_account_id TEXT NOT NULL,
     campaign_id TEXT,
     placement_key TEXT NOT NULL,
     site TEXT,
@@ -127,11 +132,13 @@ db.exec(`
     revenue REAL NOT NULL DEFAULT 0,
     ecpm REAL NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(user_id, placement_key, date),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    UNIQUE(user_id, gam_account_id, placement_key, date),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (gam_account_id) REFERENCES gam_accounts(id) ON DELETE CASCADE
   );
   CREATE INDEX IF NOT EXISTS idx_placements_user_date ON placements(user_id, date);
   CREATE INDEX IF NOT EXISTS idx_placements_campaign ON placements(user_id, campaign_id);
+  CREATE INDEX IF NOT EXISTS idx_placements_gam_account ON placements(gam_account_id);
 
   CREATE TABLE IF NOT EXISTS daily_metrics (
     id TEXT PRIMARY KEY,
