@@ -38,7 +38,7 @@ export function GoogleAccountsSection() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["google-accounts"] }),
   });
 
-  const [testResults, setTestResults] = useState<
+  const [actionResults, setActionResults] = useState<
     Record<string, { state: "ok" | "error"; message: string } | undefined>
   >({});
   const test = useMutation({
@@ -47,7 +47,7 @@ export function GoogleAccountsSection() {
       return { id, customers: data.customers };
     },
     onSuccess: ({ id, customers }) => {
-      setTestResults((prev) => ({
+      setActionResults((prev) => ({
         ...prev,
         [id]: {
           state: "ok",
@@ -58,7 +58,41 @@ export function GoogleAccountsSection() {
       }));
     },
     onError: (err, id) => {
-      setTestResults((prev) => ({
+      setActionResults((prev) => ({
+        ...prev,
+        [id]: { state: "error", message: (err as Error).message },
+      }));
+    },
+  });
+  const sync = useMutation({
+    mutationFn: async (id: string) => {
+      const data = await api<{
+        leaf_count: number;
+        metric_rows: number;
+        accounts: Array<{ customer_id: string; campaigns?: number; metric_rows?: number; error?: string }>;
+      }>(`/api/sync/google-ads/${id}`, {
+        method: "POST",
+        body: JSON.stringify({ date_preset: "LAST_7_DAYS" }),
+      });
+      return { id, ...data };
+    },
+    onSuccess: ({ id, leaf_count, metric_rows, accounts }) => {
+      const errs = accounts.filter((a) => a.error);
+      setActionResults((prev) => ({
+        ...prev,
+        [id]: {
+          state: errs.length === 0 ? "ok" : "error",
+          message:
+            errs.length === 0
+              ? `${leaf_count} conta(s), ${metric_rows} linha(s) de métrica`
+              : `${errs[0]?.error ?? "erro desconhecido"}`,
+        },
+      }));
+      qc.invalidateQueries({ queryKey: ["google-accounts"] });
+      qc.invalidateQueries({ queryKey: ["overview"] });
+    },
+    onError: (err, id) => {
+      setActionResults((prev) => ({
         ...prev,
         [id]: { state: "error", message: (err as Error).message },
       }));
@@ -134,7 +168,9 @@ export function GoogleAccountsSection() {
           <li className="text-sm text-zinc-500 py-2">Nenhuma conta adicionada.</li>
         )}
         {list.data?.map((a) => {
-          const result = testResults[a.id];
+          const result = actionResults[a.id];
+          const isTesting = test.isPending && test.variables === a.id;
+          const isSyncing = sync.isPending && sync.variables === a.id;
           return (
             <li
               key={a.id}
@@ -167,9 +203,17 @@ export function GoogleAccountsSection() {
                     type="button"
                     className={ghostButtonClass}
                     onClick={() => test.mutate(a.id)}
-                    disabled={!a.has_refresh_token || (test.isPending && test.variables === a.id)}
+                    disabled={!a.has_refresh_token || isTesting}
                   >
-                    {test.isPending && test.variables === a.id ? "Testando..." : "Testar"}
+                    {isTesting ? "Testando..." : "Testar"}
+                  </button>
+                  <button
+                    type="button"
+                    className={ghostButtonClass}
+                    onClick={() => sync.mutate(a.id)}
+                    disabled={!a.has_refresh_token || isSyncing}
+                  >
+                    {isSyncing ? "Sincronizando..." : "Sincronizar"}
                   </button>
                   <button
                     type="button"

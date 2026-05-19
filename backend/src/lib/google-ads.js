@@ -47,15 +47,17 @@ async function getAccessToken(refreshToken) {
   return { accessToken: data.access_token, expiresIn: data.expires_in };
 }
 
+function normalizeCid(cid) {
+  return String(cid).replace(/-/g, '');
+}
+
 async function adsGet(path, accessToken, loginCustomerId) {
   const { developerToken } = requireConfig();
   const headers = {
     Authorization: `Bearer ${accessToken}`,
     'developer-token': developerToken,
   };
-  if (loginCustomerId) {
-    headers['login-customer-id'] = String(loginCustomerId).replace(/-/g, '');
-  }
+  if (loginCustomerId) headers['login-customer-id'] = normalizeCid(loginCustomerId);
   const res = await fetch(`${ADS_API_BASE}${path}`, { headers });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -68,10 +70,40 @@ async function adsGet(path, accessToken, loginCustomerId) {
   return data;
 }
 
+// Runs a GAQL query against a specific customer. Used for both
+// "list MCC children" and "campaigns + metrics" calls. Auto-paginates
+// via searchStream (returns all rows at once when small) — for large
+// result sets we'd switch to the streaming endpoint.
+async function adsSearch({ customerId, accessToken, query, loginCustomerId }) {
+  const { developerToken } = requireConfig();
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    'developer-token': developerToken,
+    'content-type': 'application/json',
+  };
+  if (loginCustomerId) headers['login-customer-id'] = normalizeCid(loginCustomerId);
+  const res = await fetch(
+    `${ADS_API_BASE}/customers/${normalizeCid(customerId)}/googleAds:search`,
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ query, pageSize: 10000 }),
+    },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data?.error?.message ?? `HTTP ${res.status}`;
+    const err = new Error(`Google Ads API: ${msg}`);
+    err.code = 'API_ERROR';
+    err.details = data;
+    throw err;
+  }
+  return data.results || [];
+}
+
 async function listAccessibleCustomers(refreshToken) {
   const { accessToken } = await getAccessToken(refreshToken);
   const data = await adsGet('/customers:listAccessibleCustomers', accessToken);
-  // resourceNames look like "customers/1234567890"
   return (data.resourceNames || []).map((rn) => rn.split('/')[1]);
 }
 
@@ -79,4 +111,6 @@ module.exports = {
   requireConfig,
   getAccessToken,
   listAccessibleCustomers,
+  adsSearch,
+  normalizeCid,
 };

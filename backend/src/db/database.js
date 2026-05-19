@@ -40,6 +40,9 @@ db.exec(`
     customer_id TEXT NOT NULL,
     login_customer_id TEXT,
     account_name TEXT,
+    descriptive_name TEXT,
+    currency TEXT,
+    manager_account_id TEXT,
     is_mcc INTEGER NOT NULL DEFAULT 0,
     refresh_token_enc TEXT,
     refresh_token_iv TEXT,
@@ -51,6 +54,7 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
   CREATE INDEX IF NOT EXISTS idx_google_accounts_user ON google_accounts(user_id);
+  CREATE INDEX IF NOT EXISTS idx_google_accounts_mgr ON google_accounts(manager_account_id);
 
   CREATE TABLE IF NOT EXISTS gam_accounts (
     id TEXT PRIMARY KEY,
@@ -95,7 +99,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS campaigns (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,
-    google_account_id TEXT,
+    google_account_id TEXT NOT NULL,
     campaign_id TEXT NOT NULL,
     name TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'enabled',
@@ -104,11 +108,12 @@ db.exec(`
     target_cpa_micros INTEGER,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(user_id, campaign_id),
+    UNIQUE(user_id, google_account_id, campaign_id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (google_account_id) REFERENCES google_accounts(id) ON DELETE SET NULL
+    FOREIGN KEY (google_account_id) REFERENCES google_accounts(id) ON DELETE CASCADE
   );
   CREATE INDEX IF NOT EXISTS idx_campaigns_user ON campaigns(user_id);
+  CREATE INDEX IF NOT EXISTS idx_campaigns_account ON campaigns(google_account_id);
 
   CREATE TABLE IF NOT EXISTS placements (
     id TEXT PRIMARY KEY,
@@ -131,6 +136,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS daily_metrics (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,
+    google_account_id TEXT,
     campaign_id TEXT NOT NULL,
     date TEXT NOT NULL,
     spend REAL NOT NULL DEFAULT 0,
@@ -144,7 +150,7 @@ db.exec(`
     ecpm REAL NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(user_id, campaign_id, date),
+    UNIQUE(user_id, google_account_id, campaign_id, date),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
   CREATE INDEX IF NOT EXISTS idx_daily_metrics_user_date ON daily_metrics(user_id, date DESC);
