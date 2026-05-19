@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { fmtCurrency, fmtPercent, fmtNumber, fmtDecimal } from "@/lib/format";
 import { FilterBar, EMPTY_FILTERS, type DashboardFilters } from "./filter-bar";
@@ -24,6 +24,7 @@ type Overview = {
 };
 
 export function Dashboard({ username }: { username: string }) {
+  const qc = useQueryClient();
   const [filters, setFilters] = useState<DashboardFilters>(EMPTY_FILTERS);
 
   const params = new URLSearchParams();
@@ -36,6 +37,21 @@ export function Dashboard({ username }: { username: string }) {
     queryFn: () => api<Overview>(`/api/dashboard/overview${qs ? `?${qs}` : ""}`),
   });
 
+  const recalc = useMutation({
+    mutationFn: () =>
+      api<{ rows_updated: number; revenue_allocated: number }>(`/api/sync/rollup`, {
+        method: "POST",
+        body: JSON.stringify(
+          filters.fromDate || filters.toDate
+            ? { from: filters.fromDate || undefined, to: filters.toDate || undefined }
+            : {},
+        ),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["overview"] });
+    },
+  });
+
   const t = overview.data?.totals;
   const cov = overview.data?.coverage;
   const noData = !overview.isLoading && cov && cov.days_with_data === 0;
@@ -45,7 +61,24 @@ export function Dashboard({ username }: { username: string }) {
       <AppHeader username={username} />
 
       <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-        <FilterBar filters={filters} onChange={setFilters} />
+        <div className="flex items-start gap-3">
+          <div className="flex-1">
+            <FilterBar filters={filters} onChange={setFilters} />
+          </div>
+          <button
+            type="button"
+            onClick={() => recalc.mutate()}
+            disabled={recalc.isPending}
+            className="h-9 px-3 mt-[40px] rounded-md border border-zinc-700 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+            title="Re-calcula receita/profit/ROI a partir dos dados já sincronizados"
+          >
+            {recalc.isPending
+              ? "Recalculando..."
+              : recalc.isSuccess
+                ? `${recalc.data?.rows_updated ?? 0} linha(s) atualizadas`
+                : "Recalcular"}
+          </button>
+        </div>
 
         {noData && (
           <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-6 text-center text-sm text-zinc-400">

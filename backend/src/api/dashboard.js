@@ -36,8 +36,11 @@ router.get('/overview', (req, res) => {
   const spend = row.spend || 0;
   const revenue = row.revenue || 0;
   const profit = row.profit || 0;
-  const roi = spend > 0 ? ((revenue - spend) / spend) * 100 : 0;
-  const roas = spend > 0 ? revenue / spend : 0;
+  // ROI and ROAS use the per-row `profit` column (already net of
+  // revenue_share_pct from rollup) so the totals here match what each
+  // daily_metrics row shows. `revenue` stays as gross GAM revenue.
+  const roi = spend > 0 ? (profit / spend) * 100 : 0;
+  const roas = spend > 0 ? (spend + profit) / spend : 0;
 
   res.json({
     range: { from: from || null, to: to || null },

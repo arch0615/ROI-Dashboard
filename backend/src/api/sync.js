@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const db = require('../db/database');
 const { syncGoogleAdsAccount } = require('../sync/google-ads');
 const { syncGamAccount } = require('../sync/gam');
+const { rolloverDailyMetrics } = require('../sync/rollup');
 
 const router = express.Router();
 
@@ -52,6 +53,38 @@ router.post('/google-ads/:account_id', async (req, res) => {
     if (err.code === 'TOKEN_REFRESH' || err.code === 'API_ERROR') {
       return res.status(502).json({ error: err.message });
     }
+    throw err;
+  }
+});
+
+// Re-runs the rollup without hitting Google. Useful after the user
+// changes revenue_share_pct or fixes account_site_links — daily_metrics
+// will recompute revenue/profit/roi/roas/ecpm in place.
+router.post('/rollup', (req, res) => {
+  const { from, to } = req.body || {};
+  const logId = crypto.randomUUID();
+  db.prepare(
+    `INSERT INTO sync_logs (id, user_id, source, status, started_at)
+     VALUES (?, ?, 'rollup', 'running', CURRENT_TIMESTAMP)`,
+  ).run(logId, req.user.id);
+  try {
+    const result = rolloverDailyMetrics({ userId: req.user.id, from, to });
+    db.prepare(
+      `UPDATE sync_logs
+          SET status = 'ok',
+              records_processed = ?,
+              finished_at = CURRENT_TIMESTAMP
+        WHERE id = ?`,
+    ).run(result.rows_updated, logId);
+    res.json({ ok: true, log_id: logId, ...result });
+  } catch (err) {
+    db.prepare(
+      `UPDATE sync_logs
+          SET status = 'error',
+              error = ?,
+              finished_at = CURRENT_TIMESTAMP
+        WHERE id = ?`,
+    ).run(err.message, logId);
     throw err;
   }
 });

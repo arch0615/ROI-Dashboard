@@ -16,6 +16,7 @@ const crypto = require('crypto');
 const db = require('../db/database');
 const { decrypt } = require('../lib/crypto');
 const googleAds = require('../lib/google-ads');
+const { rolloverDailyMetrics } = require('./rollup');
 
 const ALLOWED_PRESETS = new Set([
   'TODAY',
@@ -280,12 +281,18 @@ async function syncGoogleAdsAccount({ userId, accountId, datePreset, from, to })
     root.id,
   );
 
+  // Auto-rollup so ROI/profit/roas reflect the new spend immediately. We
+  // don't pass from/to — the rollup is cheap and a full pass keeps the
+  // math consistent even when a previous run wrote partial data.
+  const rollup = rolloverDailyMetrics({ userId });
+
   return {
     root: { id: root.id, customer_id: root.customer_id, is_mcc: !!root.is_mcc },
     date_clause: dateClause,
     leaf_count: leaves.length,
     metric_rows: totalMetricRows,
     accounts: perAccount,
+    rollup,
   };
 }
 

@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const db = require('../db/database');
 const { decrypt } = require('../lib/crypto');
 const gam = require('../lib/gam');
+const { rolloverDailyMetrics } = require('./rollup');
 
 const ALLOWED_PRESETS = new Set([
   'TODAY',
@@ -135,11 +136,16 @@ async function syncGamAccount({ userId, accountId, datePreset, from, to }) {
     account.id,
   );
 
+  // New placement data invalidates the existing rollup numbers — re-run
+  // so daily_metrics.revenue/profit/roi/roas/ecpm catch up.
+  const rollup = rolloverDailyMetrics({ userId });
+
   return {
     account: { id: account.id, network_code: account.network_code },
     rows_written: written,
     total_revenue: totalRevenue,
     date_range: dateRange,
+    rollup,
   };
 }
 
