@@ -24,30 +24,54 @@ writes it into our local SQLite. Idempotent — safe to re-run.
 Skipped: `profiles`, `automation_actions`, `sync_logs` (operational, regenerate
 locally), and anything else not in our schema yet.
 
-### Prerequisites
+### Two auth modes
 
-You need the **service-role key** from Supabase Project Settings > API >
-service_role. The anon key in `ad-genius-tracker/.env` won't work — it's
-restricted by RLS and returns empty arrays without a user JWT.
+Pick whichever you can actually use.
 
-You also need the **source user UUID** (Julio's `auth.users.id` in Supabase).
-Find it by querying `select id from auth.users` in the SQL editor, or by
-inspecting any row in `google_accounts` and copying its `user_id`.
+#### Mode A — sign in as the user (no dashboard access needed) ★ recommended
 
-### Run
+The script POSTs `/auth/v1/token?grant_type=password` to log in as Julio,
+gets a user JWT back, and uses it for all reads. RLS returns exactly his
+rows — which is what we want.
+
+Needs:
+- `SUPABASE_URL` — from `ad-genius-tracker/.env`
+- `SUPABASE_ANON_KEY` — the `VITE_SUPABASE_PUBLISHABLE_KEY` value from
+  `ad-genius-tracker/.env`
+- `SOURCE_EMAIL` — Julio's login email for ad-genius-tracker
+- `SOURCE_PASSWORD` — his password
+- `ENCRYPTION_KEY` — from our backend's `.env` (so refresh_tokens decrypt later)
 
 ```bash
 cd /home/ad-genius/backend
 
-# Optional: preview row counts without writing
+# Pull URL + anon key out of the tracker's .env automatically
+TRACKER_ENV=/home/ad-genius-tracker/.env
+SUPABASE_URL=$(grep '^VITE_SUPABASE_URL=' $TRACKER_ENV | cut -d= -f2- | tr -d '"')
+SUPABASE_ANON_KEY=$(grep '^VITE_SUPABASE_PUBLISHABLE_KEY=' $TRACKER_ENV | cut -d= -f2- | tr -d '"')
+ENCRYPTION_KEY=$(grep '^ENCRYPTION_KEY=' .env | cut -d= -f2)
+
+# Dry run first — counts only, no writes
 DRY_RUN=true \
-  SUPABASE_URL=https://pxlgkpuaaptbubsnvfkz.supabase.co \
-  SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOi...PASTE_FULL_JWT \
-  SOURCE_USER_ID=00000000-0000-0000-0000-000000000000 \
-  ENCRYPTION_KEY=$(grep ENCRYPTION_KEY .env | cut -d= -f2) \
+  SUPABASE_URL=$SUPABASE_URL \
+  SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY \
+  ENCRYPTION_KEY=$ENCRYPTION_KEY \
+  SOURCE_EMAIL='julio@example.com' \
+  SOURCE_PASSWORD='his-real-password' \
   node scripts/migrate-from-supabase.js
 
 # Real run — drop DRY_RUN
+SUPABASE_URL=$SUPABASE_URL \
+  SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY \
+  ENCRYPTION_KEY=$ENCRYPTION_KEY \
+  SOURCE_EMAIL='julio@example.com' \
+  SOURCE_PASSWORD='his-real-password' \
+  node scripts/migrate-from-supabase.js
+```
+
+#### Mode B — service-role key (needs Supabase dashboard access)
+
+```bash
 SUPABASE_URL=https://pxlgkpuaaptbubsnvfkz.supabase.co \
   SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOi...PASTE_FULL_JWT \
   SOURCE_USER_ID=00000000-0000-0000-0000-000000000000 \
@@ -55,8 +79,10 @@ SUPABASE_URL=https://pxlgkpuaaptbubsnvfkz.supabase.co \
   node scripts/migrate-from-supabase.js
 ```
 
-After it finishes, re-run the rollup so derived columns (profit/ROI/ROAS/eCPM)
-recompute against the freshly migrated data:
+### After the migration
+
+Re-run the rollup so derived columns (profit/ROI/ROAS/eCPM) recompute against
+the freshly migrated data:
 
 ```bash
 PASS=$(grep '^DASHBOARD_PASS=' .env | cut -d= -f2)

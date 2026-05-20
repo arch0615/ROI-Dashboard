@@ -1,35 +1,44 @@
 #!/usr/bin/env node
 //
 // One-shot migration from the original ad-genius-tracker Supabase
-// Postgres into our local SQLite. Reads via the Supabase REST API
-// using a service-role key so RLS is bypassed.
+// Postgres into our local SQLite. Two auth modes — pick one:
 //
-// Required env (pass via shell, not the .env file, so the key never
-// lives on disk):
-//   SUPABASE_URL                e.g. https://pxlgkpuaaptbubsnvfkz.supabase.co
-//   SUPABASE_SERVICE_ROLE_KEY   the long eyJ... JWT from
-//                               Project Settings > API > service_role
-//   SOURCE_USER_ID              the Supabase auth.users UUID whose
-//                               data we're migrating (Julio's uid)
+// === Mode A: sign in as the user (no dashboard access needed) ===
+//   SUPABASE_URL          e.g. https://pxlgkpuaaptbubsnvfkz.supabase.co
+//   SUPABASE_ANON_KEY     the publishable key (already in tracker/.env
+//                         as VITE_SUPABASE_PUBLISHABLE_KEY)
+//   SOURCE_EMAIL          the email used to log into ad-genius-tracker
+//   SOURCE_PASSWORD       that account's password
+//
+//   The script POSTs to /auth/v1/token?grant_type=password, gets a
+//   user JWT, and uses it for all subsequent reads. Supabase RLS
+//   returns only the rows that user can see — which is exactly the
+//   data we want to migrate.
+//
+// === Mode B: service-role key (bypasses RLS, needs dashboard access) ===
+//   SUPABASE_URL
+//   SUPABASE_SERVICE_ROLE_KEY   the long eyJ... JWT from Project
+//                               Settings > API > service_role
+//   SOURCE_USER_ID              the Supabase auth.users UUID
+//
+// Required for either mode:
+//   ENCRYPTION_KEY    must match backend/.env (re-encrypts refresh_token)
+//
 // Optional:
-//   TARGET_USER_ID    integer id in our users table (default 1 — admin)
-//   ENCRYPTION_KEY    must match backend/.env; we encrypt refresh_token
-//                     into the same shape the running backend expects
-//   TABLES            csv: limit to a subset, e.g. "google_accounts,sites"
+//   TARGET_USER_ID    integer id in our users table (default 1)
+//   TABLES            csv subset, e.g. "google_accounts,sites"
 //   DRY_RUN           "true" to print counts without writing
 //
-// Usage:
-//   cd /home/ad-genius/backend
-//   SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... SOURCE_USER_ID=... \
-//     ENCRYPTION_KEY=$(grep ENCRYPTION_KEY .env | cut -d= -f2) \
-//     node scripts/migrate-from-supabase.js
+// Usage examples at bottom of this file.
 
 const path = require('path');
 const crypto = require('crypto');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const SOURCE_USER_ID = process.env.SOURCE_USER_ID;
+const SOURCE_EMAIL = process.env.SOURCE_EMAIL;
+const SOURCE_PASSWORD = process.env.SOURCE_PASSWORD;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const TARGET_USER_ID = Number(process.env.TARGET_USER_ID ?? 1);
 const DRY_RUN = process.env.DRY_RUN === 'true';
 const TABLES_FILTER = process.env.TABLES ? new Set(process.env.TABLES.split(',').map((s) => s.trim())) : null;
@@ -40,26 +49,69 @@ function die(msg) {
 }
 
 if (!SUPABASE_URL) die('SUPABASE_URL is required');
-if (!SUPABASE_KEY) die('SUPABASE_SERVICE_ROLE_KEY is required (get it from Supabase Project Settings > API)');
-if (!SOURCE_USER_ID) die('SOURCE_USER_ID is required (Supabase auth.users UUID to migrate)');
-if (!process.env.ENCRYPTION_KEY) die('ENCRYPTION_KEY is required (must match backend/.env so refresh_tokens decrypt later)');
+if (!process.env.ENCRYPTION_KEY) die('ENCRYPTION_KEY is required (must match backend/.env)');
+
+// Determine auth mode.
+const passwordMode = SOURCE_EMAIL && SOURCE_PASSWORD && SUPABASE_ANON_KEY;
+const serviceRoleMode = SUPABASE_SERVICE_ROLE_KEY && process.env.SOURCE_USER_ID;
+if (!passwordMode && !serviceRoleMode) {
+  die(
+    'Auth mode unclear. For password mode set SOURCE_EMAIL + SOURCE_PASSWORD + SUPABASE_ANON_KEY. For service-role mode set SUPABASE_SERVICE_ROLE_KEY + SOURCE_USER_ID.',
+  );
+}
 
 const db = require('../src/db/database');
 const { encrypt } = require('../src/lib/crypto');
+
+// Resolved at runtime by signInWithPassword() (password mode) or by env
+// (service-role mode). All sbFetch calls share these.
+let API_KEY = null;        // apikey header (anon key or service-role key)
+let BEARER = null;         // Authorization header (user JWT or service-role key)
+let SOURCE_USER_ID = null; // Julio's auth.users.id
+
+async function signInWithPassword() {
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      apikey: SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify({ email: SOURCE_EMAIL, password: SOURCE_PASSWORD }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    die(`Sign-in failed: ${data.error_description ?? data.error ?? res.status} (${data.msg ?? data.message ?? ''})`);
+  }
+  if (!data.access_token || !data.user?.id) {
+    die(`Sign-in response missing access_token/user.id: ${JSON.stringify(data).slice(0, 200)}`);
+  }
+  API_KEY = SUPABASE_ANON_KEY;
+  BEARER = data.access_token;
+  SOURCE_USER_ID = data.user.id;
+  console.log(`[migrate] signed in as ${SOURCE_EMAIL} (user_id=${SOURCE_USER_ID})`);
+}
+
+function useServiceRole() {
+  API_KEY = SUPABASE_SERVICE_ROLE_KEY;
+  BEARER = SUPABASE_SERVICE_ROLE_KEY;
+  SOURCE_USER_ID = process.env.SOURCE_USER_ID;
+}
 
 async function sbFetch(table, { filterByUser = true, select = '*', extra = '' } = {}) {
   // page through the result set 1000 rows at a time using the Range header
   const all = [];
   let from = 0;
   const pageSize = 1000;
+  // In password mode, RLS already scopes results to the signed-in user,
+  // so the explicit user_id filter is redundant but harmless.
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const userFilter = filterByUser ? `&user_id=eq.${SOURCE_USER_ID}` : '';
     const url = `${SUPABASE_URL}/rest/v1/${table}?select=${encodeURIComponent(select)}${userFilter}${extra}`;
     const res = await fetch(url, {
       headers: {
-        apikey: SUPABASE_KEY,
-        Authorization: `Bearer ${SUPABASE_KEY}`,
+        apikey: API_KEY,
+        Authorization: `Bearer ${BEARER}`,
         Range: `${from}-${from + pageSize - 1}`,
         Prefer: 'count=exact',
       },
@@ -522,6 +574,8 @@ const ORDER = [
 ];
 
 (async () => {
+  if (passwordMode) await signInWithPassword();
+  else useServiceRole();
   console.log(`[migrate] source=${SUPABASE_URL} src_user=${SOURCE_USER_ID} -> target_user=${TARGET_USER_ID}${DRY_RUN ? ' (DRY RUN)' : ''}`);
   if (TABLES_FILTER) console.log(`[migrate] tables filter: ${[...TABLES_FILTER].join(',')}`);
   const summary = [];
