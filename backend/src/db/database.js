@@ -206,6 +206,22 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS alerts (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'warning',
+    category TEXT NOT NULL,
+    campaign_id TEXT,
+    placement_key TEXT,
+    title TEXT NOT NULL,
+    message TEXT,
+    metric_snapshot TEXT,
+    acknowledged INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_alerts_user_unack ON alerts(user_id, acknowledged, created_at DESC);
+
   CREATE TABLE IF NOT EXISTS sync_logs (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,

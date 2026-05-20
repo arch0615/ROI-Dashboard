@@ -21,6 +21,7 @@
 // (typically USD). Conversion happens in M3 D5 once we have fx rates.
 
 const db = require('../db/database');
+const { evaluateAlertsForUser } = require('./alerts');
 
 function rolloverDailyMetrics({ userId, from, to }) {
   const rules = db
@@ -133,12 +134,24 @@ function rolloverDailyMetrics({ userId, from, to }) {
   });
   writeAll();
 
+  // After the rollup, re-evaluate alerts so the dashboard's badges
+  // stay in sync with the freshest ROI numbers. A failure here
+  // shouldn't roll back the rollup itself — surface it but keep going.
+  let alertsResult = null;
+  try {
+    alertsResult = evaluateAlertsForUser({ userId });
+  } catch (err) {
+    console.warn(`[rollup] alerts eval failed for user ${userId}: ${err.message}`);
+    alertsResult = { error: err.message };
+  }
+
   return {
     revenue_share_pct: revShare,
     rows_updated: updated,
     revenue_allocated: totalRevenueAllocated,
     from: from ?? null,
     to: to ?? null,
+    alerts: alertsResult,
   };
 }
 

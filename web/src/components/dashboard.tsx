@@ -9,6 +9,7 @@ import { MetricCard } from "./metric-card";
 import { AppHeader } from "./app-header";
 import { CampaignsTable } from "./campaigns-table";
 import { RoiChart } from "./roi-chart";
+import { AlertsPanel } from "./alerts-panel";
 
 type Overview = {
   range: { from: string | null; to: string | null };
@@ -128,6 +129,8 @@ export function Dashboard({ username }: { username: string }) {
             Erro ao carregar métricas: {(overview.error as Error).message}
           </div>
         )}
+
+        <AlertsPanel />
 
         <RoiChart from={filters.fromDate} to={filters.toDate} />
 

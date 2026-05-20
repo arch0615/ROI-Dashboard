@@ -2,6 +2,7 @@ const express = require('express');
 const { syncGoogleAdsAccount } = require('../sync/google-ads');
 const { syncGamAccount } = require('../sync/gam');
 const { rolloverDailyMetrics } = require('../sync/rollup');
+const { evaluateAlertsForUser } = require('../sync/alerts');
 const { withSyncLog } = require('../sync/with-log');
 const { runDailySync } = require('../scheduler/jobs');
 
@@ -83,6 +84,24 @@ router.post('/rollup', async (req, res) => {
     const status = mapErrorToStatus(err);
     if (status != null) return res.status(status).json({ error: err.message });
     throw err;
+  }
+});
+
+// Re-evaluates alerts without re-running the rollup (cheap; useful
+// after the user changes rules_config thresholds without resyncing).
+router.post('/alerts', async (req, res) => {
+  try {
+    const result = await withSyncLog({
+      userId: req.user.id,
+      source: 'alerts',
+      fn: () => {
+        const r = evaluateAlertsForUser({ userId: req.user.id });
+        return { ...r, records_processed: r.drafts_emitted };
+      },
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
