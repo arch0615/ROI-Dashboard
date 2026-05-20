@@ -8,6 +8,7 @@ import { FilterBar, EMPTY_FILTERS, type DashboardFilters } from "./filter-bar";
 import { MetricCard } from "./metric-card";
 import { AppHeader } from "./app-header";
 import { CampaignsTable } from "./campaigns-table";
+import { RoiChart } from "./roi-chart";
 
 type Overview = {
   range: { from: string | null; to: string | null };
@@ -127,6 +128,8 @@ export function Dashboard({ username }: { username: string }) {
             Erro ao carregar métricas: {(overview.error as Error).message}
           </div>
         )}
+
+        <RoiChart from={filters.fromDate} to={filters.toDate} />
 
         <CampaignsTable from={filters.fromDate} to={filters.toDate} />
       </main>

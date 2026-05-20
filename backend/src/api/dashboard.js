@@ -61,4 +61,41 @@ router.get('/overview', (req, res) => {
   });
 });
 
+// GET /api/dashboard/timeseries?from=&to=
+// One row per day. ROI is recomputed from per-day totals so summed
+// ratios stay correct.
+router.get('/timeseries', (req, res) => {
+  const { from, to } = req.query;
+  const params = [req.user.id];
+  let where = `WHERE user_id = ?`;
+  if (from) {
+    where += ` AND date >= ?`;
+    params.push(from);
+  }
+  if (to) {
+    where += ` AND date <= ?`;
+    params.push(to);
+  }
+  const rows = db
+    .prepare(
+      `SELECT
+         date,
+         COALESCE(SUM(spend), 0)       AS spend,
+         COALESCE(SUM(revenue), 0)     AS revenue,
+         COALESCE(SUM(profit), 0)      AS profit,
+         COALESCE(SUM(clicks), 0)      AS clicks,
+         COALESCE(SUM(impressions), 0) AS impressions
+       FROM daily_metrics
+       ${where}
+       GROUP BY date
+       ORDER BY date ASC`,
+    )
+    .all(...params);
+  for (const r of rows) {
+    r.roi = r.spend > 0 ? (r.profit / r.spend) * 100 : 0;
+    r.roas = r.spend > 0 ? (r.spend + r.profit) / r.spend : 0;
+  }
+  res.json(rows);
+});
+
 module.exports = router;
