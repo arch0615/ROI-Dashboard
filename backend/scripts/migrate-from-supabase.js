@@ -52,11 +52,21 @@ if (!SUPABASE_URL) die('SUPABASE_URL is required');
 if (!process.env.ENCRYPTION_KEY) die('ENCRYPTION_KEY is required (must match backend/.env)');
 
 // Determine auth mode.
-const passwordMode = SOURCE_EMAIL && SOURCE_PASSWORD && SUPABASE_ANON_KEY;
+const GUEST_LOGIN = process.env.GUEST_LOGIN === 'true';
+// Guest mode only needs the anon key — the edge function uses fixed
+// server-side creds (GUEST_LOGIN_EMAIL/PASSWORD) when the body is empty
+// and returns the OWNER's session. Email/password env vars are optional;
+// when set they're forwarded to the edge function for the
+// matches-configured check.
+const guestMode = GUEST_LOGIN && SUPABASE_ANON_KEY;
+const passwordMode = !GUEST_LOGIN && SOURCE_EMAIL && SOURCE_PASSWORD && SUPABASE_ANON_KEY;
 const serviceRoleMode = SUPABASE_SERVICE_ROLE_KEY && process.env.SOURCE_USER_ID;
-if (!passwordMode && !serviceRoleMode) {
+if (!guestMode && !passwordMode && !serviceRoleMode) {
   die(
-    'Auth mode unclear. For password mode set SOURCE_EMAIL + SOURCE_PASSWORD + SUPABASE_ANON_KEY. For service-role mode set SUPABASE_SERVICE_ROLE_KEY + SOURCE_USER_ID.',
+    'Auth mode unclear. Set one of:\n' +
+      '  guest mode:        GUEST_LOGIN=true + SUPABASE_ANON_KEY (uses server-side fixed creds)\n' +
+      '  password mode:     SOURCE_EMAIL + SOURCE_PASSWORD + SUPABASE_ANON_KEY\n' +
+      '  service-role mode: SUPABASE_SERVICE_ROLE_KEY + SOURCE_USER_ID',
   );
 }
 
@@ -89,6 +99,52 @@ async function signInWithPassword() {
   BEARER = data.access_token;
   SOURCE_USER_ID = data.user.id;
   console.log(`[migrate] signed in as ${SOURCE_EMAIL} (user_id=${SOURCE_USER_ID})`);
+}
+
+// Guest mode: ad-genius-tracker exposes a /functions/v1/guest-login
+// edge function that validates fixed guest credentials and returns the
+// OWNER user's session (so the guest sees the owner's data via RLS).
+// We use the returned access_token to read the owner's rows, then
+// resolve the owner's user_id via /auth/v1/user.
+async function signInAsGuest() {
+  // Send the email/password if provided (server matches against fixed
+  // creds). Otherwise send empty body — the function falls back to the
+  // useFixed branch and returns the OWNER's session unconditionally.
+  const body = SOURCE_EMAIL && SOURCE_PASSWORD
+    ? { email: SOURCE_EMAIL, password: SOURCE_PASSWORD }
+    : {};
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/guest-login`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    die(`Guest sign-in failed: ${data.error ?? res.status}`);
+  }
+  if (!data.access_token) {
+    die(`Guest sign-in response missing access_token: ${JSON.stringify(data).slice(0, 200)}`);
+  }
+  // Resolve the OWNER's user_id by calling /auth/v1/user with the guest's
+  // (actually the owner's) JWT.
+  const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${data.access_token}`,
+    },
+  });
+  const user = await userRes.json().catch(() => ({}));
+  if (!userRes.ok || !user.id) {
+    die(`Failed to resolve owner user via /auth/v1/user: ${user.error ?? userRes.status}`);
+  }
+  API_KEY = SUPABASE_ANON_KEY;
+  BEARER = data.access_token;
+  SOURCE_USER_ID = user.id;
+  console.log(`[migrate] guest-login -> owner ${user.email} (user_id=${SOURCE_USER_ID})`);
 }
 
 function useServiceRole() {
@@ -574,7 +630,8 @@ const ORDER = [
 ];
 
 (async () => {
-  if (passwordMode) await signInWithPassword();
+  if (guestMode) await signInAsGuest();
+  else if (passwordMode) await signInWithPassword();
   else useServiceRole();
   console.log(`[migrate] source=${SUPABASE_URL} src_user=${SOURCE_USER_ID} -> target_user=${TARGET_USER_ID}${DRY_RUN ? ' (DRY RUN)' : ''}`);
   if (TABLES_FILTER) console.log(`[migrate] tables filter: ${[...TABLES_FILTER].join(',')}`);

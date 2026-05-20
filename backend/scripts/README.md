@@ -81,8 +81,21 @@ SUPABASE_URL=https://pxlgkpuaaptbubsnvfkz.supabase.co \
 
 ### After the migration
 
-Re-run the rollup so derived columns (profit/ROI/ROAS/eCPM) recompute against
-the freshly migrated data:
+⚠️ **Do NOT run the rollup against migrated-only data.** The original
+`placements` table has no `gam_account_id` column, so the script assigns
+every imported placement to a single fallback GAM account (the user's first
+one). The rollup's site→GAM join then fails to attribute revenue to sites
+linked to the *other* GAM accounts, and it would overwrite the migrated
+`daily_metrics.revenue` / `profit` / `roi` values with zeros. The migrated
+`daily_metrics` already carries the correct revenue/profit values from the
+old system — leave them alone.
+
+Once Julio reconnects via OAuth and a fresh GAM sync runs, the new
+`placements` rows DO carry `gam_account_id` and the rollup works as intended.
+Rule of thumb: rollup is safe only when the placements in scope all came
+from a real sync (not from migration).
+
+To recompute derived columns when that's true (post-fresh-sync):
 
 ```bash
 PASS=$(grep '^DASHBOARD_PASS=' .env | cut -d= -f2)
