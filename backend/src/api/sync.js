@@ -3,6 +3,7 @@ const { syncGoogleAdsAccount } = require('../sync/google-ads');
 const { syncGamAccount } = require('../sync/gam');
 const { rolloverDailyMetrics } = require('../sync/rollup');
 const { evaluateAlertsForUser } = require('../sync/alerts');
+const { refreshFxRates } = require('../sync/fx');
 const { withSyncLog } = require('../sync/with-log');
 const { runDailySync } = require('../scheduler/jobs');
 
@@ -84,6 +85,24 @@ router.post('/rollup', async (req, res) => {
     const status = mapErrorToStatus(err);
     if (status != null) return res.status(status).json({ error: err.message });
     throw err;
+  }
+});
+
+// Refresh FX rates for every currency any gam_accounts row uses against
+// TARGET_CURRENCY (default BRL). Caches today's rates.
+router.post('/fx', async (req, res) => {
+  try {
+    const result = await withSyncLog({
+      userId: req.user.id,
+      source: 'fx',
+      fn: async () => {
+        const r = await refreshFxRates();
+        return { ...r, records_processed: r.pairs_refreshed };
+      },
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
   }
 });
 

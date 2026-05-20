@@ -206,6 +206,15 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS fx_rates (
+    from_currency TEXT NOT NULL,
+    to_currency TEXT NOT NULL,
+    date TEXT NOT NULL,
+    rate REAL NOT NULL,
+    fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (from_currency, to_currency, date)
+  );
+
   CREATE TABLE IF NOT EXISTS alerts (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,

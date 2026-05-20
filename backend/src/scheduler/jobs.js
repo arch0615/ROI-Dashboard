@@ -15,6 +15,7 @@
 const db = require('../db/database');
 const { syncGoogleAdsAccount } = require('../sync/google-ads');
 const { syncGamAccount } = require('../sync/gam');
+const { refreshFxRates } = require('../sync/fx');
 const { withSyncLog } = require('../sync/with-log');
 
 async function runDailySyncForUser({ userId, datePreset = 'YESTERDAY' }) {
@@ -73,6 +74,16 @@ async function runDailySyncForUser({ userId, datePreset = 'YESTERDAY' }) {
 }
 
 async function runDailySync({ userId, datePreset = 'YESTERDAY' } = {}) {
+  // Refresh FX rates ONCE up front before any GAM sync. Cached lookups
+  // inside the sync skip the network when these are warm.
+  let fxResult = null;
+  try {
+    fxResult = await refreshFxRates();
+  } catch (err) {
+    console.warn(`[daily-sync] FX refresh failed: ${err.message}`);
+    fxResult = { error: err.message };
+  }
+
   // If a userId is passed, scope to that user. Otherwise iterate every
   // user with at least one provider-credentialed account.
   let targets;
@@ -95,7 +106,12 @@ async function runDailySync({ userId, datePreset = 'YESTERDAY' } = {}) {
     const r = await runDailySyncForUser({ userId: user_id, datePreset });
     perUser.push(r);
   }
-  return { date_preset: datePreset, users_processed: perUser.length, per_user: perUser };
+  return {
+    date_preset: datePreset,
+    fx: fxResult,
+    users_processed: perUser.length,
+    per_user: perUser,
+  };
 }
 
 module.exports = { runDailySync, runDailySyncForUser };

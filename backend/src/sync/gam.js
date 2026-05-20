@@ -13,6 +13,8 @@ const crypto = require('crypto');
 const db = require('../db/database');
 const { decrypt } = require('../lib/crypto');
 const gam = require('../lib/gam');
+const fx = require('../lib/fx');
+const { TARGET_CURRENCY } = require('./fx');
 const { rolloverDailyMetrics } = require('./rollup');
 
 const ALLOWED_PRESETS = new Set([
@@ -73,18 +75,24 @@ async function syncGamAccount({ userId, accountId, datePreset, from, to }) {
   const accessToken = await gam.getAccessToken(sa);
 
   // Best-effort currency detection — failure here shouldn't abort the sync.
+  let accountCurrency = (account.currency || '').toUpperCase() || null;
   try {
     const cc = await gam.fetchNetworkCurrency({
       networkCode: account.network_code,
       accessToken,
     });
-    if (cc && cc !== account.currency) {
-      db.prepare(`UPDATE gam_accounts SET currency = ? WHERE id = ?`).run(cc, account.id);
+    if (cc) {
+      if (cc !== accountCurrency) {
+        db.prepare(`UPDATE gam_accounts SET currency = ? WHERE id = ?`).run(cc, account.id);
+      }
+      accountCurrency = cc;
     }
   } catch (err) {
     // Non-fatal; report it in the response but keep going.
     console.warn(`[gam-sync] currency detect failed for ${account.network_code}: ${err.message}`);
   }
+  // Fall back to TARGET if we still couldn't detect — no conversion will run.
+  if (!accountCurrency) accountCurrency = TARGET_CURRENCY;
 
   const dateRange = gamDateRangeFromInput({ datePreset, from, to });
   const rows = await gam.runReport({
@@ -109,12 +117,33 @@ async function syncGamAccount({ userId, accountId, datePreset, from, to }) {
       ecpm        = excluded.ecpm
   `);
 
+  // Resolve FX rates per distinct date we're about to write. We do this
+  // BEFORE opening the write transaction so we don't hold a write lock
+  // while making HTTP calls.
+  const distinctDates = Array.from(new Set(rows.map((r) => r.date))).filter(Boolean);
+  const rateByDate = new Map();
+  for (const d of distinctDates) {
+    if (accountCurrency === TARGET_CURRENCY) {
+      rateByDate.set(d, 1);
+      continue;
+    }
+    try {
+      const rate = await fx.getRate({ from: accountCurrency, to: TARGET_CURRENCY, date: d });
+      rateByDate.set(d, rate);
+    } catch (err) {
+      console.warn(`[gam-sync] FX ${accountCurrency}->${TARGET_CURRENCY} @${d} failed: ${err.message}; storing native revenue`);
+      rateByDate.set(d, null); // marker: skip conversion, store native
+    }
+  }
+
   let written = 0;
   let totalRevenue = 0;
   const writeAll = db.transaction(() => {
     for (const r of rows) {
       const adUnit = r.dims[0] || '(unknown)';
-      const ecpm = r.impressions > 0 ? (r.revenue / r.impressions) * 1000 : 0;
+      const rate = rateByDate.get(r.date);
+      const revenueConverted = rate != null ? r.revenue * rate : r.revenue;
+      const ecpm = r.impressions > 0 ? (revenueConverted / r.impressions) * 1000 : 0;
       upsert.run({
         id: crypto.randomUUID(),
         user_id: userId,
@@ -123,11 +152,11 @@ async function syncGamAccount({ userId, accountId, datePreset, from, to }) {
         ad_unit: adUnit,
         date: r.date,
         impressions: r.impressions,
-        revenue: r.revenue,
+        revenue: revenueConverted,
         ecpm,
       });
       written += 1;
-      totalRevenue += r.revenue;
+      totalRevenue += revenueConverted;
     }
   });
   writeAll();
@@ -144,6 +173,8 @@ async function syncGamAccount({ userId, accountId, datePreset, from, to }) {
     account: { id: account.id, network_code: account.network_code },
     rows_written: written,
     total_revenue: totalRevenue,
+    native_currency: accountCurrency,
+    target_currency: TARGET_CURRENCY,
     date_range: dateRange,
     rollup,
   };
