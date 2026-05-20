@@ -26,8 +26,8 @@ function parseServiceAccountJson(raw) {
 router.get('/', (req, res) => {
   const rows = db
     .prepare(
-      `SELECT id, network_code, account_name, service_account_email, currency, status,
-              last_synced_at, created_at,
+      `SELECT id, network_code, account_name, service_account_email, currency,
+              utm_key_id, utm_key_name, status, last_synced_at, created_at,
               CASE WHEN service_account_json_enc IS NOT NULL THEN 1 ELSE 0 END AS has_service_account
          FROM gam_accounts
         WHERE user_id = ?
@@ -35,6 +35,36 @@ router.get('/', (req, res) => {
     )
     .all(req.user.id);
   res.json(rows.map((r) => ({ ...r, has_service_account: !!r.has_service_account })));
+});
+
+// Partial update — currently only the UTM key fields. Other columns
+// are immutable once created (delete + recreate if you need to change
+// network_code or the service account).
+router.patch('/:id', (req, res) => {
+  const { utm_key_id, utm_key_name } = req.body || {};
+  const sets = [];
+  const params = [];
+  if ('utm_key_id' in (req.body || {})) {
+    sets.push('utm_key_id = ?');
+    params.push(utm_key_id ? String(utm_key_id) : null);
+  }
+  if ('utm_key_name' in (req.body || {})) {
+    sets.push('utm_key_name = ?');
+    params.push(utm_key_name ? String(utm_key_name) : null);
+  }
+  if (sets.length === 0) return res.status(400).json({ error: 'Nenhum campo para atualizar' });
+  params.push(req.params.id, req.user.id);
+  const info = db
+    .prepare(`UPDATE gam_accounts SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`)
+    .run(...params);
+  if (info.changes === 0) return res.status(404).json({ error: 'Conta não encontrada' });
+  const row = db
+    .prepare(
+      `SELECT id, network_code, account_name, utm_key_id, utm_key_name
+         FROM gam_accounts WHERE id = ?`,
+    )
+    .get(req.params.id);
+  res.json(row);
 });
 
 router.post('/', (req, res) => {

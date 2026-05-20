@@ -1,10 +1,57 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { SectionCard, buttonClass, ghostButtonClass, inputClass } from "./section-card";
 import type { GamAccount } from "./types";
+
+function UtmKeyForm({
+  account,
+  onSave,
+  isSaving,
+}: {
+  account: GamAccount;
+  onSave: (vars: { id: string; utm_key_id: string; utm_key_name: string }) => void;
+  isSaving: boolean;
+}) {
+  const [keyId, setKeyId] = useState(account.utm_key_id ?? "");
+  const [keyName, setKeyName] = useState(account.utm_key_name ?? "");
+  useEffect(() => {
+    setKeyId(account.utm_key_id ?? "");
+    setKeyName(account.utm_key_name ?? "");
+  }, [account.utm_key_id, account.utm_key_name]);
+
+  const dirty = keyId !== (account.utm_key_id ?? "") || keyName !== (account.utm_key_name ?? "");
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      <span className="text-zinc-500">UTM:</span>
+      <input
+        className={`${inputClass} h-7 w-28 text-xs`}
+        placeholder="key_id (ex: 12345)"
+        value={keyId}
+        onChange={(e) => setKeyId(e.target.value.trim())}
+      />
+      <input
+        className={`${inputClass} h-7 w-40 text-xs`}
+        placeholder="rótulo (ex: utm_campaign)"
+        value={keyName}
+        onChange={(e) => setKeyName(e.target.value)}
+      />
+      {dirty && (
+        <button
+          type="button"
+          onClick={() => onSave({ id: account.id, utm_key_id: keyId, utm_key_name: keyName })}
+          disabled={isSaving}
+          className="h-7 px-2 rounded-md bg-zinc-100 text-zinc-950 text-xs font-medium hover:bg-white disabled:opacity-50"
+        >
+          {isSaving ? "..." : "Salvar"}
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function GamAccountsSection() {
   const qc = useQueryClient();
@@ -62,6 +109,46 @@ export function GamAccountsSection() {
       }));
     },
   });
+  const utmSync = useMutation({
+    mutationFn: async (id: string) => {
+      const data = await api<{ rows_written: number; total_revenue: number; unmatched_rows: number }>(
+        `/api/sync/gam-utm/${id}`,
+        { method: "POST", body: JSON.stringify({ date_preset: "LAST_7_DAYS" }) },
+      );
+      return { id, ...data };
+    },
+    onSuccess: ({ id, rows_written, total_revenue, unmatched_rows }) => {
+      setSyncResults((prev) => ({
+        ...prev,
+        [id]: {
+          state: "ok",
+          message: `UTM: ${rows_written} linha(s) atribuída(s), receita ${total_revenue.toFixed(2)}${unmatched_rows ? ` (${unmatched_rows} sem valor)` : ""}`,
+        },
+      }));
+      qc.invalidateQueries({ queryKey: ["overview"] });
+    },
+    onError: (err, id) => {
+      setSyncResults((prev) => ({
+        ...prev,
+        [id]: { state: "error", message: (err as Error).message },
+      }));
+    },
+  });
+  const saveUtmKey = useMutation({
+    mutationFn: async (vars: { id: string; utm_key_id: string; utm_key_name: string }) => {
+      const data = await api<GamAccount>(`/api/gam-accounts/${vars.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          utm_key_id: vars.utm_key_id || null,
+          utm_key_name: vars.utm_key_name || null,
+        }),
+      });
+      return data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["gam-accounts"] });
+    },
+  });
 
   return (
     <SectionCard
@@ -117,6 +204,7 @@ export function GamAccountsSection() {
         {list.data?.map((a) => {
           const result = syncResults[a.id];
           const isSyncing = sync.isPending && sync.variables === a.id;
+          const isUtmSyncing = utmSync.isPending && utmSync.variables === a.id;
           return (
             <li
               key={a.id}
@@ -141,8 +229,10 @@ export function GamAccountsSection() {
                     >
                       {a.has_service_account ? "SA salva" : "sem SA"}
                     </span>
-                    {a.service_account_email && (
-                      <span className="truncate">{a.service_account_email}</span>
+                    {a.utm_key_id && (
+                      <span className="rounded bg-indigo-900/50 text-indigo-300 px-1.5 py-0.5">
+                        UTM key {a.utm_key_id}
+                      </span>
                     )}
                   </div>
                 </div>
@@ -158,6 +248,19 @@ export function GamAccountsSection() {
                   <button
                     type="button"
                     className={ghostButtonClass}
+                    onClick={() => utmSync.mutate(a.id)}
+                    disabled={!a.has_service_account || !a.utm_key_id || isUtmSyncing}
+                    title={
+                      a.utm_key_id
+                        ? "Sincronizar receita por UTM (atribuição direta a campanhas)"
+                        : "Configure utm_key_id abaixo"
+                    }
+                  >
+                    {isUtmSyncing ? "UTM..." : "UTM"}
+                  </button>
+                  <button
+                    type="button"
+                    className={ghostButtonClass}
                     onClick={() => del.mutate(a.id)}
                     disabled={del.isPending}
                   >
@@ -165,6 +268,11 @@ export function GamAccountsSection() {
                   </button>
                 </div>
               </div>
+              <UtmKeyForm
+                account={a}
+                onSave={(vars) => saveUtmKey.mutate(vars)}
+                isSaving={saveUtmKey.isPending && saveUtmKey.variables?.id === a.id}
+              />
               {result && (
                 <div
                   className={`text-xs ${

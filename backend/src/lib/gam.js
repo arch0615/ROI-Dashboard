@@ -178,9 +178,21 @@ function parseGamDate(value) {
 
 // Runs a HISTORICAL report and returns flattened rows:
 //   [{ date, dims: [adUnitName | placementName], impressions, revenue }, ...]
-// Dimensions[0] must always be DATE.
-async function runReport({ networkCode, accessToken, dateRange, dimensions, metrics = DEFAULT_METRICS }) {
+// Dimensions[0] must always be DATE. When the dimensions list contains
+// CUSTOM_DIMENSION, customDimensionKeyIds must be the array of numeric
+// key ids (as strings) GAM should resolve against.
+async function runReport({
+  networkCode,
+  accessToken,
+  dateRange,
+  dimensions,
+  metrics = DEFAULT_METRICS,
+  customDimensionKeyIds,
+}) {
   const reportDefinition = { reportType: 'HISTORICAL', dimensions, metrics, dateRange };
+  if (customDimensionKeyIds && customDimensionKeyIds.length > 0) {
+    reportDefinition.customDimensionKeyIds = customDimensionKeyIds.map(String);
+  }
   const create = await gamJson(`${GAM_BASE}/networks/${networkCode}/reports`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },

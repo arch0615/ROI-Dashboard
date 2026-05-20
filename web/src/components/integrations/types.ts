@@ -16,6 +16,8 @@ export type GamAccount = {
   account_name: string | null;
   service_account_email: string | null;
   currency: string | null;
+  utm_key_id: string | null;
+  utm_key_name: string | null;
   status: string;
   last_synced_at: string | null;
   created_at: string;

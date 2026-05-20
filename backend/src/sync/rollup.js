@@ -1,13 +1,18 @@
 // Daily metrics rollup. Ties GAM revenue (placements) back to Google Ads
 // campaigns (daily_metrics) via account_site_links.
 //
-// Attribution model (v1 — site-level pro-rata by spend share):
-//   For each (site, date):
-//     site_revenue   = SUM(placements.revenue over linked GAM accounts)
-//     site_spend     = SUM(daily_metrics.spend over linked Ads accounts)
-//   For each daily_metrics row tied to a site that has site_spend > 0:
-//     allocated_rev  = site_revenue * (row.spend / site_spend)
-//   Otherwise allocated_rev = 0.
+// Attribution model (v2 — UTM-direct + site-level pro-rata residual):
+//   For each (campaign, date):
+//     If utm_revenue has a row for that (campaign, date), use it as the
+//     direct attribution and DO NOT include this campaign in pro-rata.
+//   For the remaining campaigns on each site (those without UTM data):
+//     site_rev_residual   = SUM(placements.revenue) - SUM(utm_revenue
+//                            attributed to UTM-tagged campaigns on this site)
+//     site_spend_residual = SUM(daily_metrics.spend) - SUM(spend of
+//                            UTM-tagged campaigns on this site)
+//     allocated_rev = site_rev_residual * (row.spend / site_spend_residual)
+//   Without UTM at all, this degrades to the original v1 site-level
+//   pro-rata.
 //
 // Then revenue_share_pct from rules_config is applied:
 //   net_revenue = allocated_rev * (1 - revenue_share_pct/100)
@@ -42,9 +47,6 @@ function rolloverDailyMetrics({ userId, from, to }) {
   }
   const where = filters.join(' AND ');
 
-  // We bind userId four times into the CTEs + once into the outer where,
-  // and the optional from/to bindings tail the params array. Re-derive
-  // the CTE params from scratch so we don't accidentally interleave.
   const rows = db
     .prepare(
       `
@@ -72,18 +74,62 @@ function rolloverDailyMetrics({ userId, from, to }) {
       JOIN site_for_ads sfa ON sfa.google_account_id = dm.google_account_id
       WHERE dm.user_id = @user_id
       GROUP BY sfa.site_id, dm.date
+    ),
+    -- For each (site, date) sum the utm_revenue tied to that site
+    -- via the GAM account's link. This is what we subtract from
+    -- site_revenue to get the leftover for pro-rata.
+    utm_attributed_revenue AS (
+      SELECT asl.site_id, u.date, SUM(u.revenue) AS revenue
+      FROM utm_revenue u
+      JOIN account_site_links asl
+        ON asl.gam_account_id = u.gam_account_id
+       AND asl.user_id = @user_id
+      WHERE u.user_id = @user_id
+      GROUP BY asl.site_id, u.date
+    ),
+    -- For each (site, date) sum the spend of UTM-attributed campaigns
+    -- on this site. Same subtraction trick on the spend denominator.
+    utm_attributed_spend AS (
+      SELECT sfa.site_id, dm.date, SUM(dm.spend) AS spend
+      FROM daily_metrics dm
+      JOIN site_for_ads sfa ON sfa.google_account_id = dm.google_account_id
+      WHERE dm.user_id = @user_id
+        AND EXISTS (
+          SELECT 1 FROM utm_revenue u
+          WHERE u.user_id = @user_id
+            AND u.ga_campaign_id = dm.campaign_id
+            AND u.date = dm.date
+        )
+      GROUP BY sfa.site_id, dm.date
     )
     SELECT
       dm.id,
       dm.spend AS row_spend,
       dm.impressions AS row_impressions,
       sfa.site_id,
-      COALESCE(sr.revenue, 0) AS site_revenue,
-      COALESCE(ss.spend, 0)   AS site_spend
+      COALESCE(sr.revenue, 0)  AS site_revenue,
+      COALESCE(ss.spend, 0)    AS site_spend,
+      COALESCE(uar.revenue, 0) AS utm_attributed_revenue,
+      COALESCE(uas.spend, 0)   AS utm_attributed_spend,
+      COALESCE((
+        SELECT SUM(u.revenue)
+        FROM utm_revenue u
+        WHERE u.user_id = dm.user_id
+          AND u.ga_campaign_id = dm.campaign_id
+          AND u.date = dm.date
+      ), 0) AS row_utm_revenue,
+      CASE WHEN EXISTS (
+        SELECT 1 FROM utm_revenue u
+        WHERE u.user_id = dm.user_id
+          AND u.ga_campaign_id = dm.campaign_id
+          AND u.date = dm.date
+      ) THEN 1 ELSE 0 END AS has_utm
     FROM daily_metrics dm
     LEFT JOIN site_for_ads sfa ON sfa.google_account_id = dm.google_account_id
     LEFT JOIN site_revenue sr  ON sr.site_id = sfa.site_id AND sr.date = dm.date
     LEFT JOIN site_spend   ss  ON ss.site_id = sfa.site_id AND ss.date = dm.date
+    LEFT JOIN utm_attributed_revenue uar ON uar.site_id = sfa.site_id AND uar.date = dm.date
+    LEFT JOIN utm_attributed_spend   uas ON uas.site_id = sfa.site_id AND uas.date = dm.date
     WHERE ${where.replace('dm.user_id = ?', 'dm.user_id = @user_id')}
        ${from ? 'AND dm.date >= @from' : ''}
        ${to ? 'AND dm.date <= @to' : ''}
@@ -108,12 +154,21 @@ function rolloverDailyMetrics({ userId, from, to }) {
 
   let updated = 0;
   let totalRevenueAllocated = 0;
+  let utmDirectCount = 0;
   const writeAll = db.transaction(() => {
     for (const r of rows) {
-      const allocatedRev =
-        r.site_spend > 0 && r.row_spend > 0
-          ? r.site_revenue * (r.row_spend / r.site_spend)
-          : 0;
+      let allocatedRev = 0;
+      if (r.has_utm) {
+        allocatedRev = r.row_utm_revenue;
+        utmDirectCount += 1;
+      } else {
+        const residualRev = Math.max(0, r.site_revenue - r.utm_attributed_revenue);
+        const residualSpend = Math.max(0, r.site_spend - r.utm_attributed_spend);
+        allocatedRev =
+          residualSpend > 0 && r.row_spend > 0
+            ? residualRev * (r.row_spend / residualSpend)
+            : 0;
+      }
       const netRevenue = allocatedRev * netFactor;
       const spend = r.row_spend;
       const profit = netRevenue - spend;
@@ -148,6 +203,7 @@ function rolloverDailyMetrics({ userId, from, to }) {
   return {
     revenue_share_pct: revShare,
     rows_updated: updated,
+    utm_direct_rows: utmDirectCount,
     revenue_allocated: totalRevenueAllocated,
     from: from ?? null,
     to: to ?? null,

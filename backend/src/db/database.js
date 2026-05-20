@@ -7,6 +7,24 @@ const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
+// Idempotent ALTER TABLE ADD COLUMN. CREATE TABLE IF NOT EXISTS below
+// handles fresh DBs, but pre-existing DBs need column-level migrations
+// for new fields. We add columns here BEFORE the CREATE TABLE block so
+// callers below can rely on the final shape.
+function addColumnIfMissing(table, column, type) {
+  const exists = db.prepare(`PRAGMA table_info(${table})`).all().some((r) => r.name === column);
+  if (!exists) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+}
+try {
+  addColumnIfMissing('gam_accounts', 'utm_key_id', 'TEXT');
+  addColumnIfMissing('gam_accounts', 'utm_key_name', 'TEXT');
+} catch (err) {
+  // Tables may not exist on a fresh DB — that's fine, CREATE TABLE below
+  // will use the new shape. Only surfaces when a missing column blocks
+  // a table that *does* exist.
+  if (!String(err.message).includes('no such table')) throw err;
+}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS _meta (
     key TEXT PRIMARY KEY,
@@ -76,6 +94,8 @@ db.exec(`
     service_account_json_iv TEXT,
     service_account_json_tag TEXT,
     currency TEXT,
+    utm_key_id TEXT,
+    utm_key_name TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     last_synced_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -83,6 +103,22 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
   CREATE INDEX IF NOT EXISTS idx_gam_accounts_user ON gam_accounts(user_id);
+
+  CREATE TABLE IF NOT EXISTS utm_revenue (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    gam_account_id TEXT NOT NULL,
+    ga_campaign_id TEXT NOT NULL,
+    date TEXT NOT NULL,
+    impressions INTEGER NOT NULL DEFAULT 0,
+    revenue REAL NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, gam_account_id, ga_campaign_id, date),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (gam_account_id) REFERENCES gam_accounts(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_utm_revenue_user_date ON utm_revenue(user_id, date DESC);
+  CREATE INDEX IF NOT EXISTS idx_utm_revenue_campaign ON utm_revenue(user_id, ga_campaign_id, date);
 
   CREATE TABLE IF NOT EXISTS sites (
     id TEXT PRIMARY KEY,
