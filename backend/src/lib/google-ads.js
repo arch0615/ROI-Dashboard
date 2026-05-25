@@ -11,7 +11,7 @@
 const OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const OAUTH_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const ADS_API_SCOPE = 'https://www.googleapis.com/auth/adwords';
-const ADS_API_BASE = 'https://googleads.googleapis.com/v18';
+const ADS_API_BASE = 'https://googleads.googleapis.com/v21';
 
 function requireConfig() {
   const clientId = process.env.GOOGLE_CLIENT_ID;
@@ -150,12 +150,15 @@ async function adsSearch({ customerId, accessToken, query, loginCustomerId }) {
     'content-type': 'application/json',
   };
   if (loginCustomerId) headers['login-customer-id'] = normalizeCid(loginCustomerId);
+  // v21 rejects pageSize ("PAGE_SIZE_NOT_SUPPORTED"); the server now
+  // returns a fixed 10000-row page implicitly. nextPageToken still
+  // works the same — keeping the loop just in case.
   const res = await fetch(
     `${ADS_API_BASE}/customers/${normalizeCid(customerId)}/googleAds:search`,
     {
       method: 'POST',
       headers,
-      body: JSON.stringify({ query, pageSize: 10000 }),
+      body: JSON.stringify({ query }),
     },
   );
   const data = await res.json().catch(() => ({}));

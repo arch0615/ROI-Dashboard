@@ -334,7 +334,66 @@ const migrators = {
       }
     });
     tx();
-    return { read: src.length, written };
+
+    // Backfill gam_account_id for links that don't have one. The
+    // original ad-genius-tracker schema only tracked the Google Ads
+    // side of the link; the GAM side was inferred at query time. Our
+    // schema makes the join explicit so the rollup can resolve site
+    // -> GAM in a single CTE. Pass 1: match GAM account_name to site
+    // name. Pass 2: fall through any remaining links to the GAM
+    // account that hosts the largest historical placement volume —
+    // a sensible default that Julio's data revealed during the first
+    // migration.
+    const passOne = db.prepare(`
+      UPDATE account_site_links
+         SET gam_account_id = (
+           SELECT ga.id FROM gam_accounts ga
+             JOIN sites s ON s.id = account_site_links.site_id
+            WHERE LOWER(ga.account_name) = LOWER(s.name)
+              AND ga.user_id = ?
+            LIMIT 1
+         )
+       WHERE gam_account_id IS NULL
+         AND user_id = ?
+         AND EXISTS (
+           SELECT 1 FROM gam_accounts ga
+             JOIN sites s ON s.id = account_site_links.site_id
+            WHERE LOWER(ga.account_name) = LOWER(s.name)
+              AND ga.user_id = ?
+         )
+    `);
+    const passOneInfo = passOne.run(TARGET_USER_ID, TARGET_USER_ID, TARGET_USER_ID);
+
+    // Pick the GAM account most rows of historical placements landed
+    // on — this is the migration-time fallback (the script earlier
+    // assigned every legacy placement to the first GAM account).
+    const fallbackGam = db
+      .prepare(
+        `SELECT gam_account_id, COUNT(*) AS n
+           FROM placements
+          WHERE user_id = ? AND gam_account_id IS NOT NULL
+          GROUP BY gam_account_id
+          ORDER BY n DESC
+          LIMIT 1`,
+      )
+      .get(TARGET_USER_ID);
+    let passTwoCount = 0;
+    if (fallbackGam) {
+      const r = db
+        .prepare(
+          `UPDATE account_site_links
+              SET gam_account_id = ?
+            WHERE gam_account_id IS NULL AND user_id = ?`,
+        )
+        .run(fallbackGam.gam_account_id, TARGET_USER_ID);
+      passTwoCount = r.changes;
+    }
+    return {
+      read: src.length,
+      written,
+      backfilled_gam_by_name: passOneInfo.changes,
+      backfilled_gam_by_fallback: passTwoCount,
+    };
   },
 
   campaigns: async () => {

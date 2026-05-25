@@ -39,22 +39,45 @@ router.get('/', (req, res) => {
   res.json(rows.map((r) => ({ ...r, has_service_account: !!r.has_service_account })));
 });
 
-// Partial update — currently only the UTM key fields. Other columns
-// are immutable once created (delete + recreate if you need to change
-// network_code or the service account).
+// Partial update — utm_key_{id,name} and service_account_json.
+// Other columns are immutable once created (delete + recreate if you
+// need to change network_code).
 router.patch('/:id', (req, res) => {
   if (!req.scope.is_admin) return res.status(403).json({ error: 'Apenas administradores' });
-  const { utm_key_id, utm_key_name } = req.body || {};
+  const body = req.body || {};
   const sets = [];
   const params = [];
-  if ('utm_key_id' in (req.body || {})) {
+
+  if ('utm_key_id' in body) {
     sets.push('utm_key_id = ?');
-    params.push(utm_key_id ? String(utm_key_id) : null);
+    params.push(body.utm_key_id ? String(body.utm_key_id) : null);
   }
-  if ('utm_key_name' in (req.body || {})) {
+  if ('utm_key_name' in body) {
     sets.push('utm_key_name = ?');
-    params.push(utm_key_name ? String(utm_key_name) : null);
+    params.push(body.utm_key_name ? String(body.utm_key_name) : null);
   }
+
+  if ('service_account_json' in body) {
+    let sa = null;
+    try {
+      sa = parseServiceAccountJson(body.service_account_json);
+    } catch (err) {
+      if (err.code === 'BAD_SA_JSON') return res.status(400).json({ error: err.message });
+      throw err;
+    }
+    if (sa) {
+      const enc = encrypt(JSON.stringify(sa));
+      sets.push(
+        'service_account_json_enc = ?',
+        'service_account_json_iv = ?',
+        'service_account_json_tag = ?',
+        'service_account_email = ?',
+        "status = 'active'",
+      );
+      params.push(enc.ciphertext, enc.iv, enc.tag, sa.client_email);
+    }
+  }
+
   if (sets.length === 0) return res.status(400).json({ error: 'Nenhum campo para atualizar' });
   params.push(req.params.id, req.user.id);
   const info = db
@@ -63,10 +86,13 @@ router.patch('/:id', (req, res) => {
   if (info.changes === 0) return res.status(404).json({ error: 'Conta não encontrada' });
   const row = db
     .prepare(
-      `SELECT id, network_code, account_name, utm_key_id, utm_key_name
+      `SELECT id, network_code, account_name, service_account_email, currency,
+              utm_key_id, utm_key_name, status,
+              CASE WHEN service_account_json_enc IS NOT NULL THEN 1 ELSE 0 END AS has_service_account
          FROM gam_accounts WHERE id = ?`,
     )
     .get(req.params.id);
+  row.has_service_account = !!row.has_service_account;
   res.json(row);
 });
 

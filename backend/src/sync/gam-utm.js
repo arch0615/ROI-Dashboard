@@ -18,31 +18,7 @@ const gam = require('../lib/gam');
 const fx = require('../lib/fx');
 const { TARGET_CURRENCY } = require('./fx');
 
-const ALLOWED_PRESETS = new Set([
-  'TODAY',
-  'YESTERDAY',
-  'LAST_7_DAYS',
-  'LAST_14_DAYS',
-  'LAST_30_DAYS',
-]);
-
-function gamDateRangeFromInput({ datePreset, from, to }) {
-  if (datePreset && ALLOWED_PRESETS.has(String(datePreset).toUpperCase())) {
-    return { relativeDateRange: String(datePreset).toUpperCase() };
-  }
-  const iso = /^\d{4}-\d{2}-\d{2}$/;
-  if (from && to && iso.test(from) && iso.test(to)) {
-    const [fy, fm, fd] = from.split('-').map(Number);
-    const [ty, tm, td] = to.split('-').map(Number);
-    return {
-      fixedDateRange: {
-        startDate: { year: fy, month: fm, day: fd },
-        endDate: { year: ty, month: tm, day: td },
-      },
-    };
-  }
-  return { relativeDateRange: 'LAST_7_DAYS' };
-}
+const { gamDateRangeFromInput } = require('./gam-dates');
 
 async function syncGamUtm({ userId, accountId, datePreset, from, to }) {
   const account = db
