@@ -34,18 +34,37 @@ function dateClauseFromInput({ datePreset, from, to }) {
   return 'segments.date DURING LAST_7_DAYS';
 }
 
-// Strip protocol + www + path/query so the same physical placement
-// matches against the GAM-reported utm_placement value.
+// Normalize a placement string to the form Julio's UTM emits so the
+// aggregator's join works. Critical bug fix from Julio's 2026-05-25
+// report: previous version stripped the path, but Ads' {placement}
+// macro and his GAM utm_placement value both carry HOST + PATH
+// (e.g. "unibrasilvestibulares.com.br/rec-cadastro-..."). Stripping
+// the path collapsed every page of the same site into one row and
+// killed revenue attribution.
+//
+//   Inputs we accept:
+//     "https://www.site.com/path?utm=..."
+//     "site.com/path"
+//     "mobileapp::5004988-com.example.app"
+//   Output: lower-case "host/path", no protocol/www/query/hash, no
+//   trailing slash. Apps return just their bundle id.
 function cleanPlacement(raw, targetUrl) {
-  const s = String(raw || targetUrl || '').trim().toLowerCase();
-  if (!s) return '';
-  const appMatch = s.match(/mobileapp::\d+-(.+)$/i);
+  const input = String(raw || targetUrl || '').trim().toLowerCase();
+  if (!input) return '';
+  const appMatch = input.match(/^mobileapp::\d+-(.+)$/i);
   if (appMatch) return appMatch[1];
   try {
-    const u = new URL(s.startsWith('http') ? s : `https://${s}`);
-    return u.hostname.replace(/^www\./, '');
+    const u = new URL(input.startsWith('http') ? input : `https://${input}`);
+    const host = u.hostname.replace(/^www\./, '');
+    const path = u.pathname.replace(/\/+$/, '');
+    return path ? `${host}${path}` : host;
   } catch {
-    return s.replace(/^www\./, '').split('/')[0];
+    // Not a parseable URL — best-effort cleanup of stray prefixes.
+    return input
+      .replace(/^https?:\/\//, '')
+      .replace(/^www\./, '')
+      .replace(/[?#].*$/, '')
+      .replace(/\/+$/, '');
   }
 }
 

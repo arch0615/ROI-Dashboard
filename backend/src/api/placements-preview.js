@@ -25,8 +25,22 @@
 const express = require('express');
 const db = require('../db/database');
 const { inClause } = require('../lib/access');
+const { cleanPlacement } = require('../sync/google-ads-placements');
 
 const router = express.Router();
+
+// Julio's ad URLs follow the format
+//   utm_placement={campaignid}_{placement}
+// where {placement} is Google's auto-expansion (typically host+path).
+// To match against ads_placements.placement_clean (also host+path),
+// strip the leading "<digits>_" then run it through the same cleaner
+// the Ads sync uses.
+function normalizeUtmPlacement(rawValue) {
+  if (!rawValue) return '';
+  const s = String(rawValue).trim();
+  const stripped = s.replace(/^\d{4,}[_:-]/, '');
+  return cleanPlacement(stripped, null);
+}
 
 const DEFAULT_MIN_COST = 20;   // BRL — match original placement_cleanup_min_cost_brl
 const DEFAULT_MAX_ROI = -10;   // % — placement_cleanup_max_roi_pct
@@ -83,29 +97,41 @@ router.get('/preview', (req, res) => {
     )
     .all(...params);
 
-  // Per-(campaign, placement) revenue from GAM via UTM. The placement_value
-  // is whatever the publisher tagged into utm_placement; we normalize by
-  // lowercase + trim, matching how cleanPlacement normalized the Ads side.
-  const gamClause = inClause('ga.id', req.scope.google_account_ids);
-  const revRows = db
+  // Per-(campaign, placement) revenue from GAM via UTM. The raw
+  // placement_value carries the "campaignid_" prefix from Julio's
+  // utm_placement scheme (utm_placement={campaignid}_{placement}); we
+  // run it through normalizeUtmPlacement so both sides of the join end
+  // up in the same "host/path" form. SQL can't safely strip the
+  // numeric prefix, so we group at the row level here in JS.
+  const rawRevRows = db
     .prepare(
       `SELECT
          u.ga_campaign_id AS campaign_id,
-         LOWER(TRIM(u.placement_value)) AS placement_norm,
+         u.placement_value,
          SUM(u.impressions) AS impressions,
          SUM(u.revenue) AS revenue
        FROM utm_revenue_placements u
        WHERE u.user_id = ?
          AND u.date BETWEEN ? AND ?
-       GROUP BY u.ga_campaign_id, placement_norm`,
+       GROUP BY u.ga_campaign_id, u.placement_value`,
     )
     .all(req.scope.tenant_user_id ?? req.user.id, from, to);
 
-  // Index revenue rows for O(1) lookup by (campaign_id, placement_clean).
+  // Index revenue rows for O(1) lookup by (campaign_id, normalized
+  // placement). Multiple raw placement_values can normalize to the
+  // same key (e.g. with or without query strings) so we accumulate.
   const revByKey = new Map();
-  for (const r of revRows) {
-    revByKey.set(`${r.campaign_id}|${r.placement_norm}`, r);
+  const revRows = [];
+  for (const r of rawRevRows) {
+    const placement_norm = normalizeUtmPlacement(r.placement_value);
+    if (!placement_norm) continue;
+    const key = `${r.campaign_id}|${placement_norm}`;
+    const cur = revByKey.get(key) ?? { campaign_id: r.campaign_id, placement_norm, revenue: 0, impressions: 0 };
+    cur.revenue += Number(r.revenue) || 0;
+    cur.impressions += Number(r.impressions) || 0;
+    revByKey.set(key, cur);
   }
+  revByKey.forEach((v) => revRows.push(v));
   // And per-campaign totals so we can attribute the orphan revenue.
   const revByCampaign = new Map();
   for (const r of revRows) {
