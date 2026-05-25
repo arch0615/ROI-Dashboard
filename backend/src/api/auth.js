@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const db = require('../db/database');
+const { getAccessScope } = require('../lib/access');
 
 const router = express.Router();
 
@@ -86,8 +87,17 @@ function requireAuth(req, res, next) {
   const user = getSessionUser(req.cookies?.session);
   if (!user) return res.status(401).json({ error: 'Não autenticado' });
   req.user = user;
+  req.scope = getAccessScope(user);
+  next();
+}
+
+function requireAdmin(req, res, next) {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Apenas administradores' });
+  }
   next();
 }
 
 module.exports = router;
 module.exports.requireAuth = requireAuth;
+module.exports.requireAdmin = requireAdmin;

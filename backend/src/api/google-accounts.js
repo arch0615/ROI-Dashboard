@@ -2,25 +2,28 @@ const express = require('express');
 const crypto = require('crypto');
 const db = require('../db/database');
 const { encrypt, decrypt } = require('../lib/crypto');
+const { inClause } = require('../lib/access');
 const googleAds = require('../lib/google-ads');
 
 const router = express.Router();
 
 router.get('/', (req, res) => {
+  const { sql, params } = inClause('id', req.scope.google_account_ids);
   const rows = db
     .prepare(
       `SELECT id, customer_id, login_customer_id, account_name, is_mcc, status,
               last_synced_at, created_at,
               CASE WHEN refresh_token_enc IS NOT NULL THEN 1 ELSE 0 END AS has_refresh_token
          FROM google_accounts
-        WHERE user_id = ?
+        WHERE ${sql}
         ORDER BY created_at DESC`,
     )
-    .all(req.user.id);
+    .all(...params);
   res.json(rows.map((r) => ({ ...r, is_mcc: !!r.is_mcc, has_refresh_token: !!r.has_refresh_token })));
 });
 
 router.post('/', (req, res) => {
+  if (!req.scope.is_admin) return res.status(403).json({ error: 'Apenas administradores' });
   const { customer_id, login_customer_id, account_name, is_mcc, refresh_token } = req.body || {};
   if (!customer_id) return res.status(400).json({ error: 'customer_id obrigatório' });
 
@@ -57,6 +60,7 @@ router.post('/', (req, res) => {
 });
 
 router.delete('/:id', (req, res) => {
+  if (!req.scope.is_admin) return res.status(403).json({ error: 'Apenas administradores' });
   const info = db
     .prepare(`DELETE FROM google_accounts WHERE id = ? AND user_id = ?`)
     .run(req.params.id, req.user.id);
@@ -69,12 +73,15 @@ router.delete('/:id', (req, res) => {
 // token can see — useful both for "test connection" and as a starting
 // point for picking which sub-accounts to sync.
 router.get('/:id/customers', async (req, res) => {
+  if (!req.scope.google_account_ids.includes(req.params.id)) {
+    return res.status(404).json({ error: 'Conta não encontrada' });
+  }
   const row = db
     .prepare(
       `SELECT refresh_token_enc, refresh_token_iv, refresh_token_tag
-         FROM google_accounts WHERE id = ? AND user_id = ?`,
+         FROM google_accounts WHERE id = ?`,
     )
-    .get(req.params.id, req.user.id);
+    .get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Conta não encontrada' });
   if (!row.refresh_token_enc) {
     return res.status(400).json({ error: 'Conta sem refresh_token salvo' });

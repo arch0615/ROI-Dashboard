@@ -1,17 +1,20 @@
 const express = require('express');
 const crypto = require('crypto');
 const db = require('../db/database');
+const { inClause } = require('../lib/access');
 
 const router = express.Router();
 
 router.get('/', (req, res) => {
+  const { sql, params } = inClause('id', req.scope.site_ids);
   const rows = db
-    .prepare(`SELECT id, name, domain, created_at FROM sites WHERE user_id = ? ORDER BY name`)
-    .all(req.user.id);
+    .prepare(`SELECT id, name, domain, created_at FROM sites WHERE ${sql} ORDER BY name`)
+    .all(...params);
   res.json(rows);
 });
 
 router.post('/', (req, res) => {
+  if (!req.scope.is_admin) return res.status(403).json({ error: 'Apenas administradores' });
   const { name, domain } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name obrigatório' });
   const id = crypto.randomUUID();
@@ -32,6 +35,7 @@ router.post('/', (req, res) => {
 });
 
 router.delete('/:id', (req, res) => {
+  if (!req.scope.is_admin) return res.status(403).json({ error: 'Apenas administradores' });
   const info = db
     .prepare(`DELETE FROM sites WHERE id = ? AND user_id = ?`)
     .run(req.params.id, req.user.id);

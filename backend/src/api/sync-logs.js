@@ -3,6 +3,13 @@ const db = require('../db/database');
 
 const router = express.Router();
 
+router.use((req, res, next) => {
+  if (!req.scope?.is_admin) {
+    return res.status(403).json({ error: 'Apenas administradores' });
+  }
+  next();
+});
+
 router.get('/', (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   const rows = db

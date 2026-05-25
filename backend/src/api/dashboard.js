@@ -1,14 +1,17 @@
 const express = require('express');
 const db = require('../db/database');
+const { inClause } = require('../lib/access');
 
 const router = express.Router();
 
 // GET /api/dashboard/overview?from=YYYY-MM-DD&to=YYYY-MM-DD
-// Aggregates daily_metrics over the range. Empty range -> all-time.
+// Aggregates daily_metrics over the range, scoped to the caller's
+// accessible google_account_ids.
 router.get('/overview', (req, res) => {
   const { from, to } = req.query;
-  const params = [req.user.id];
-  let where = `WHERE user_id = ?`;
+  const accountClause = inClause('google_account_id', req.scope.google_account_ids);
+  const params = [...accountClause.params];
+  let where = accountClause.sql;
   if (from) {
     where += ` AND date >= ?`;
     params.push(from);
@@ -29,16 +32,13 @@ router.get('/overview', (req, res) => {
          COUNT(DISTINCT campaign_id)  AS campaigns_with_data,
          COUNT(DISTINCT date)         AS days_with_data
        FROM daily_metrics
-       ${where}`,
+       WHERE ${where}`,
     )
     .get(...params);
 
   const spend = row.spend || 0;
   const revenue = row.revenue || 0;
   const profit = row.profit || 0;
-  // ROI and ROAS use the per-row `profit` column (already net of
-  // revenue_share_pct from rollup) so the totals here match what each
-  // daily_metrics row shows. `revenue` stays as gross GAM revenue.
   const roi = spend > 0 ? (profit / spend) * 100 : 0;
   const roas = spend > 0 ? (spend + profit) / spend : 0;
 
@@ -61,13 +61,11 @@ router.get('/overview', (req, res) => {
   });
 });
 
-// GET /api/dashboard/timeseries?from=&to=
-// One row per day. ROI is recomputed from per-day totals so summed
-// ratios stay correct.
 router.get('/timeseries', (req, res) => {
   const { from, to } = req.query;
-  const params = [req.user.id];
-  let where = `WHERE user_id = ?`;
+  const accountClause = inClause('google_account_id', req.scope.google_account_ids);
+  const params = [...accountClause.params];
+  let where = accountClause.sql;
   if (from) {
     where += ` AND date >= ?`;
     params.push(from);
@@ -86,7 +84,7 @@ router.get('/timeseries', (req, res) => {
          COALESCE(SUM(clicks), 0)      AS clicks,
          COALESCE(SUM(impressions), 0) AS impressions
        FROM daily_metrics
-       ${where}
+       WHERE ${where}
        GROUP BY date
        ORDER BY date ASC`,
     )

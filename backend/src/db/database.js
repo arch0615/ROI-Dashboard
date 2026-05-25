@@ -49,6 +49,17 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 
+  CREATE TABLE IF NOT EXISTS site_memberships (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    site_id TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, site_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_site_memberships_user ON site_memberships(user_id);
+
   CREATE TABLE IF NOT EXISTS oauth_states (
     state TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,

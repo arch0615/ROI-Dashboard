@@ -10,6 +10,14 @@ const { runDailySync } = require('../scheduler/jobs');
 
 const router = express.Router();
 
+// Every sync mutates tenant-wide state — keep it admin-only.
+router.use((req, res, next) => {
+  if (!req.scope?.is_admin) {
+    return res.status(403).json({ error: 'Apenas administradores' });
+  }
+  next();
+});
+
 function mapErrorToStatus(err) {
   if (err.code === 'NOT_FOUND') return 404;
   if (err.code === 'NO_TOKEN' || err.code === 'BAD_SA_JSON' || err.code === 'BAD_PRIVATE_KEY') {

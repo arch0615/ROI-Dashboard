@@ -5,5 +5,5 @@ import { Dashboard } from "@/components/dashboard";
 export default async function Home() {
   const user = await getSessionUser();
   if (!user) redirect("/login");
-  return <Dashboard username={user.username} />;
+  return <Dashboard username={user.username} role={user.role} />;
 }

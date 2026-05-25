@@ -45,10 +45,13 @@ function shape(row) {
 }
 
 router.get('/', (req, res) => {
-  res.json(shape(ensureRow(req.user.id)));
+  // Rules are tenant-wide. For members, return the tenant admin's rules.
+  const tenantUserId = req.scope.tenant_user_id ?? req.user.id;
+  res.json(shape(ensureRow(tenantUserId)));
 });
 
 router.put('/', (req, res) => {
+  if (!req.scope.is_admin) return res.status(403).json({ error: 'Apenas administradores' });
   const body = req.body || {};
   ensureRow(req.user.id);
 

@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../db/database');
+const { inClause } = require('../lib/access');
 
 const router = express.Router();
 
@@ -9,10 +10,15 @@ const router = express.Router();
 // eCPM uses summed Ads impressions matching the per-row formula in rollup.
 router.get('/aggregate', (req, res) => {
   const { from, to, google_account_id } = req.query;
-  // SQL has placeholders in this order:
-  //   1. dateFilter inside the LEFT JOIN ON  (0..2 params: from, to)
-  //   2. WHERE c.user_id = ?                 (1 param)
-  //   3. accountFilter inside the WHERE      (0..1 params)
+  // Restrict the scope of campaigns AND daily_metrics to accounts the
+  // caller can see. If a specific google_account_id is requested, intersect
+  // it with the scope (silently ignore if out of scope).
+  let accessibleAccountIds = req.scope.google_account_ids;
+  if (google_account_id) {
+    accessibleAccountIds = accessibleAccountIds.includes(google_account_id)
+      ? [google_account_id]
+      : [];
+  }
   const params = [];
   let dateFilter = '';
   if (from) {
@@ -23,12 +29,8 @@ router.get('/aggregate', (req, res) => {
     dateFilter += ` AND dm.date <= ?`;
     params.push(to);
   }
-  params.push(req.user.id);
-  let accountFilter = '';
-  if (google_account_id) {
-    accountFilter += ` AND c.google_account_id = ?`;
-    params.push(google_account_id);
-  }
+  const accountInClause = inClause('c.google_account_id', accessibleAccountIds);
+  params.push(...accountInClause.params);
 
   const rows = db
     .prepare(
@@ -48,8 +50,7 @@ router.get('/aggregate', (req, res) => {
         AND dm.google_account_id = c.google_account_id
         AND dm.campaign_id = c.campaign_id
         ${dateFilter}
-       WHERE c.user_id = ?
-       ${accountFilter}
+       WHERE ${accountInClause.sql}
        GROUP BY c.id
        ORDER BY spend DESC`,
     )
@@ -65,18 +66,19 @@ router.get('/aggregate', (req, res) => {
 
 router.get('/', (req, res) => {
   const { google_account_id } = req.query;
-  const params = [req.user.id];
-  let where = `WHERE user_id = ?`;
+  let accessibleAccountIds = req.scope.google_account_ids;
   if (google_account_id) {
-    where += ` AND google_account_id = ?`;
-    params.push(google_account_id);
+    accessibleAccountIds = accessibleAccountIds.includes(google_account_id)
+      ? [google_account_id]
+      : [];
   }
+  const { sql, params } = inClause('google_account_id', accessibleAccountIds);
   const rows = db
     .prepare(
       `SELECT id, google_account_id, campaign_id, name, status, channel_type,
               budget_micros, target_cpa_micros, created_at, updated_at
          FROM campaigns
-         ${where}
+        WHERE ${sql}
         ORDER BY name`,
     )
     .all(...params);

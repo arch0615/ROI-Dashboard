@@ -26,7 +26,7 @@ type Overview = {
   coverage: { campaigns_with_data: number; days_with_data: number };
 };
 
-export function Dashboard({ username }: { username: string }) {
+export function Dashboard({ username, role = "admin" }: { username: string; role?: string }) {
   const qc = useQueryClient();
   const [filters, setFilters] = useState<DashboardFilters>(EMPTY_FILTERS);
 
@@ -61,7 +61,7 @@ export function Dashboard({ username }: { username: string }) {
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
-      <AppHeader username={username} />
+      <AppHeader username={username} role={role} />
 
       <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
         <div className="flex items-start gap-3">

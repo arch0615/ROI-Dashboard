@@ -1,10 +1,10 @@
 import { redirect } from "next/navigation";
 import { getSessionUser } from "@/lib/auth";
-import { RulesPanel } from "@/components/rules/rules-panel";
+import { AdminPanel } from "@/components/admin/admin-panel";
 
-export default async function RulesPage() {
+export default async function AdminPage() {
   const user = await getSessionUser();
   if (!user) redirect("/login");
   if (user.role !== "admin") redirect("/");
-  return <RulesPanel username={user.username} />;
+  return <AdminPanel username={user.username} />;
 }

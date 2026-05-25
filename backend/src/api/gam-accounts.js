@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const db = require('../db/database');
 const { encrypt } = require('../lib/crypto');
+const { inClause } = require('../lib/access');
 
 const router = express.Router();
 
@@ -24,16 +25,17 @@ function parseServiceAccountJson(raw) {
 }
 
 router.get('/', (req, res) => {
+  const { sql, params } = inClause('id', req.scope.gam_account_ids);
   const rows = db
     .prepare(
       `SELECT id, network_code, account_name, service_account_email, currency,
               utm_key_id, utm_key_name, status, last_synced_at, created_at,
               CASE WHEN service_account_json_enc IS NOT NULL THEN 1 ELSE 0 END AS has_service_account
          FROM gam_accounts
-        WHERE user_id = ?
+        WHERE ${sql}
         ORDER BY created_at DESC`,
     )
-    .all(req.user.id);
+    .all(...params);
   res.json(rows.map((r) => ({ ...r, has_service_account: !!r.has_service_account })));
 });
 
@@ -41,6 +43,7 @@ router.get('/', (req, res) => {
 // are immutable once created (delete + recreate if you need to change
 // network_code or the service account).
 router.patch('/:id', (req, res) => {
+  if (!req.scope.is_admin) return res.status(403).json({ error: 'Apenas administradores' });
   const { utm_key_id, utm_key_name } = req.body || {};
   const sets = [];
   const params = [];
@@ -68,6 +71,7 @@ router.patch('/:id', (req, res) => {
 });
 
 router.post('/', (req, res) => {
+  if (!req.scope.is_admin) return res.status(403).json({ error: 'Apenas administradores' });
   const { network_code, account_name, service_account_email, service_account_json } = req.body || {};
   if (!network_code) return res.status(400).json({ error: 'network_code obrigatório' });
 
@@ -115,6 +119,7 @@ router.post('/', (req, res) => {
 });
 
 router.delete('/:id', (req, res) => {
+  if (!req.scope.is_admin) return res.status(403).json({ error: 'Apenas administradores' });
   const info = db
     .prepare(`DELETE FROM gam_accounts WHERE id = ? AND user_id = ?`)
     .run(req.params.id, req.user.id);

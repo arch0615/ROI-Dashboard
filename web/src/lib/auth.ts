@@ -1,6 +1,6 @@
 import { cookies, headers } from "next/headers";
 
-export type SessionUser = { id: number; username: string; role: string };
+export type SessionUser = { id: number; username: string; role: "admin" | "member" | string };
 
 // Server-side fetch of /api/auth/me. Forwards the session cookie so the
 // backend can identify the user. Returns null when unauthenticated.
