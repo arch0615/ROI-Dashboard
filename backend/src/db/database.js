@@ -257,6 +257,35 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
 
+  -- Audit log for placement exclusions applied to Google Ads. Each row
+  -- records ONE (campaign, placement) pair we blocked, with the ROI
+  -- snapshot at apply-time so the user can see why it was blocked and
+  -- the resource_name returned by campaignCriterion:mutate so we can
+  -- undo (delete) it later. undone_at != NULL means the exclusion was
+  -- rolled back.
+  CREATE TABLE IF NOT EXISTS placement_exclusions (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    google_account_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    campaign_name TEXT,
+    placement TEXT NOT NULL,
+    criterion_resource_name TEXT,
+    snapshot_cost REAL,
+    snapshot_revenue REAL,
+    snapshot_roi REAL,
+    snapshot_days INTEGER,
+    reason TEXT,
+    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    applied_by_user_id INTEGER,
+    undone_at DATETIME,
+    error TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (google_account_id) REFERENCES google_accounts(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_placement_exclusions_campaign ON placement_exclusions(user_id, campaign_id);
+  CREATE INDEX IF NOT EXISTS idx_placement_exclusions_active ON placement_exclusions(user_id, undone_at);
+
   CREATE TABLE IF NOT EXISTS fx_rates (
     from_currency TEXT NOT NULL,
     to_currency TEXT NOT NULL,

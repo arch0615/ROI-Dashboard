@@ -176,6 +176,51 @@ async function adsSearch({ customerId, accessToken, query, loginCustomerId }) {
   return all;
 }
 
+// Submits a batch of campaignCriterion operations (create + remove) to
+// the v21 mutate endpoint. partial_failure=true so a single bad row
+// doesn't sink the whole batch — per-op errors come back as
+// partialFailureError. Returns { results, partialFailureError }.
+//
+// `operations` is an array of operation objects following the v21
+// proto, e.g.:
+//   { create: { campaign: 'customers/X/campaigns/Y', negative: true,
+//               placement: { url: 'site.com/path' } } }
+//   { remove: 'customers/X/campaignCriteria/Y~Z' }
+async function mutateCampaignCriteria({
+  customerId,
+  accessToken,
+  operations,
+  loginCustomerId,
+}) {
+  const { developerToken } = requireConfig();
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    'developer-token': developerToken,
+    'content-type': 'application/json',
+  };
+  if (loginCustomerId) headers['login-customer-id'] = normalizeCid(loginCustomerId);
+  const res = await fetch(
+    `${ADS_API_BASE}/customers/${normalizeCid(customerId)}/campaignCriteria:mutate`,
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ operations, partialFailure: true }),
+    },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data?.error?.message ?? `HTTP ${res.status}`;
+    const err = new Error(`Google Ads API (mutate): ${msg}`);
+    err.code = 'API_ERROR';
+    err.details = data;
+    throw err;
+  }
+  return {
+    results: data.results || [],
+    partialFailureError: data.partialFailureError ?? null,
+  };
+}
+
 async function listAccessibleCustomers(refreshToken) {
   const { accessToken } = await getAccessToken(refreshToken);
   const data = await adsGet('/customers:listAccessibleCustomers', accessToken);
@@ -190,5 +235,6 @@ module.exports = {
   getAccessToken,
   listAccessibleCustomers,
   adsSearch,
+  mutateCampaignCriteria,
   normalizeCid,
 };

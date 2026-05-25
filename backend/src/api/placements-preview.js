@@ -34,6 +34,7 @@ const express = require('express');
 const db = require('../db/database');
 const { inClause } = require('../lib/access');
 const { cleanPlacement } = require('../sync/google-ads-placements');
+const { applyPlacementExclusions, undoPlacementExclusion } = require('../sync/placements-apply');
 
 const router = express.Router();
 
@@ -236,6 +237,79 @@ router.get('/preview', (req, res) => {
   };
 
   res.json({ stats, items, campaign_totals: campaignTotals });
+});
+
+// POST /api/placements/exclude — destructive. Re-checks each item's
+// ROI against the freshest data, then submits negative-placement
+// criteria to Google Ads in one mutate batch per customer. Admin
+// only.
+router.post('/exclude', async (req, res) => {
+  if (!req.scope.is_admin) return res.status(403).json({ error: 'Apenas administradores' });
+  const { items, max_roi, from, to } = req.body || {};
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'items obrigatório (lista não vazia)' });
+  }
+  const fromIso = from && /^\d{4}-\d{2}-\d{2}$/.test(from) ? from : daysAgoIso(7);
+  const toIso = to && /^\d{4}-\d{2}-\d{2}$/.test(to) ? to : daysAgoIso(0);
+  try {
+    const result = await applyPlacementExclusions({
+      userId: req.scope.tenant_user_id ?? req.user.id,
+      appliedByUserId: req.user.id,
+      items,
+      maxRoi: Number(max_roi ?? DEFAULT_MAX_ROI),
+      from: fromIso,
+      to: toIso,
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    if (err.code === 'NOT_CONFIGURED') return res.status(503).json({ error: err.message });
+    if (err.code === 'TOKEN_REFRESH' || err.code === 'API_ERROR') {
+      return res.status(502).json({ error: err.message });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/placements/exclusions — list of every exclusion we've
+// applied, with the snapshot of why and whether it's still active.
+router.get('/exclusions', (req, res) => {
+  const { include_undone } = req.query;
+  const tenantUserId = req.scope.tenant_user_id ?? req.user.id;
+  const showUndone = include_undone === 'true' || include_undone === '1';
+  const rows = db
+    .prepare(
+      `SELECT id, campaign_id, campaign_name, placement,
+              criterion_resource_name,
+              snapshot_cost, snapshot_revenue, snapshot_roi, snapshot_days,
+              reason, applied_at, applied_by_user_id, undone_at, error
+         FROM placement_exclusions
+        WHERE user_id = ?
+          ${showUndone ? '' : 'AND undone_at IS NULL'}
+        ORDER BY applied_at DESC
+        LIMIT 500`,
+    )
+    .all(tenantUserId);
+  res.json(rows);
+});
+
+// POST /api/placements/exclusions/:id/undo — remove the negative
+// placement criterion from Google Ads and mark the row undone.
+router.post('/exclusions/:id/undo', async (req, res) => {
+  if (!req.scope.is_admin) return res.status(403).json({ error: 'Apenas administradores' });
+  try {
+    const result = await undoPlacementExclusion({
+      userId: req.scope.tenant_user_id ?? req.user.id,
+      exclusionId: req.params.id,
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    if (err.code === 'NOT_FOUND') return res.status(404).json({ error: err.message });
+    if (err.code === 'ALREADY_UNDONE') return res.status(409).json({ error: err.message });
+    if (err.code === 'API_ERROR' || err.code === 'TOKEN_REFRESH') {
+      return res.status(502).json({ error: err.message });
+    }
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;
