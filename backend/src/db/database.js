@@ -257,6 +257,33 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
 
+  -- Audit log for creative pauses applied to Google Ads. Same shape as
+  -- placement_exclusions but for ad_group_ad:mutate. Stores the
+  -- resource_name so an Undo can flip the status back to ENABLED.
+  CREATE TABLE IF NOT EXISTS creative_pauses (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    google_account_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    campaign_name TEXT,
+    ad_id TEXT NOT NULL,
+    ad_name TEXT,
+    resource_name TEXT NOT NULL,
+    snapshot_cost REAL,
+    snapshot_revenue REAL,
+    snapshot_roi REAL,
+    snapshot_diff_pp REAL,
+    snapshot_days INTEGER,
+    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    applied_by_user_id INTEGER,
+    undone_at DATETIME,
+    error TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (google_account_id) REFERENCES google_accounts(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_creative_pauses_campaign ON creative_pauses(user_id, campaign_id);
+  CREATE INDEX IF NOT EXISTS idx_creative_pauses_active ON creative_pauses(user_id, undone_at);
+
   -- Audit log for placement exclusions applied to Google Ads. Each row
   -- records ONE (campaign, placement) pair we blocked, with the ROI
   -- snapshot at apply-time so the user can see why it was blocked and
@@ -310,6 +337,36 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
   CREATE INDEX IF NOT EXISTS idx_alerts_user_unack ON alerts(user_id, acknowledged, created_at DESC);
+
+  -- Per-(campaign, ad_group, ad, date) Ads cost from GAQL ad_group_ad view.
+  -- Used by /creatives to compare ROI between creatives inside the same
+  -- campaign and surface the ones underperforming the campaign baseline.
+  CREATE TABLE IF NOT EXISTS ads_creatives (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    google_account_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    campaign_name TEXT,
+    ad_group_id TEXT,
+    ad_group_name TEXT,
+    ad_id TEXT NOT NULL,
+    ad_name TEXT,
+    ad_type TEXT,
+    status TEXT,
+    resource_name TEXT,
+    date TEXT NOT NULL,
+    impressions INTEGER NOT NULL DEFAULT 0,
+    clicks INTEGER NOT NULL DEFAULT 0,
+    cost REAL NOT NULL DEFAULT 0,
+    conversions REAL NOT NULL DEFAULT 0,
+    ctr REAL NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, google_account_id, campaign_id, ad_id, date),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (google_account_id) REFERENCES google_accounts(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_ads_creatives_campaign ON ads_creatives(user_id, campaign_id, date);
+  CREATE INDEX IF NOT EXISTS idx_ads_creatives_ad ON ads_creatives(user_id, ad_id);
 
   -- Per-(campaign, placement, date) Ads cost from GAQL detail_placement_view.
   -- Lives separate from daily_metrics because the granularity is finer

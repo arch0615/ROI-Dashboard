@@ -8,6 +8,7 @@ type NavEntry = { href: string; label: string; adminOnly?: boolean };
 const NAV: NavEntry[] = [
   { href: "/", label: "Visão Geral" },
   { href: "/placements", label: "Placements" },
+  { href: "/creatives", label: "Criativos" },
   { href: "/integrations", label: "Integrações", adminOnly: true },
   { href: "/rules", label: "Regras", adminOnly: true },
   { href: "/admin", label: "Admin", adminOnly: true },

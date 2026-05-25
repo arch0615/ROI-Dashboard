@@ -1,6 +1,7 @@
 const express = require('express');
 const { syncGoogleAdsAccount } = require('../sync/google-ads');
 const { syncAdsPlacementsForAccount } = require('../sync/google-ads-placements');
+const { syncCreativesForAccount } = require('../sync/google-ads-creatives');
 const { syncGamAccount } = require('../sync/gam');
 const { syncGamUtm } = require('../sync/gam-utm');
 const { syncGamUtmPlacement } = require('../sync/gam-utm-placement');
@@ -45,6 +46,31 @@ router.post('/google-ads/:account_id', async (req, res) => {
           to,
         });
         return { ...r, records_processed: r.metric_rows };
+      },
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    const status = mapErrorToStatus(err);
+    if (status != null) return res.status(status).json({ error: err.message });
+    throw err;
+  }
+});
+
+router.post('/google-ads-creatives/:account_id', async (req, res) => {
+  const { date_preset, from, to } = req.body || {};
+  try {
+    const result = await withSyncLog({
+      userId: req.user.id,
+      source: 'google-ads-creatives',
+      fn: async () => {
+        const r = await syncCreativesForAccount({
+          userId: req.user.id,
+          accountId: req.params.account_id,
+          datePreset: date_preset,
+          from,
+          to,
+        });
+        return { ...r, records_processed: r.rows_written };
       },
     });
     res.json({ ok: true, ...result });

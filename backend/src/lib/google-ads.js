@@ -221,6 +221,45 @@ async function mutateCampaignCriteria({
   };
 }
 
+// Same shape as mutateCampaignCriteria but for ad_group_ad — used to
+// pause/un-pause individual creatives. Operations look like:
+//   { update: { resourceName: 'customers/X/adGroupAds/Y~Z', status:
+//     'PAUSED' }, updateMask: 'status' }
+async function mutateAdGroupAds({
+  customerId,
+  accessToken,
+  operations,
+  loginCustomerId,
+}) {
+  const { developerToken } = requireConfig();
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    'developer-token': developerToken,
+    'content-type': 'application/json',
+  };
+  if (loginCustomerId) headers['login-customer-id'] = normalizeCid(loginCustomerId);
+  const res = await fetch(
+    `${ADS_API_BASE}/customers/${normalizeCid(customerId)}/adGroupAds:mutate`,
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ operations, partialFailure: true }),
+    },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data?.error?.message ?? `HTTP ${res.status}`;
+    const err = new Error(`Google Ads API (mutate adGroupAds): ${msg}`);
+    err.code = 'API_ERROR';
+    err.details = data;
+    throw err;
+  }
+  return {
+    results: data.results || [],
+    partialFailureError: data.partialFailureError ?? null,
+  };
+}
+
 async function listAccessibleCustomers(refreshToken) {
   const { accessToken } = await getAccessToken(refreshToken);
   const data = await adsGet('/customers:listAccessibleCustomers', accessToken);
@@ -236,5 +275,6 @@ module.exports = {
   listAccessibleCustomers,
   adsSearch,
   mutateCampaignCriteria,
+  mutateAdGroupAds,
   normalizeCid,
 };
