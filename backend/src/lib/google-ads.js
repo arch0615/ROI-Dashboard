@@ -138,10 +138,10 @@ async function adsGet(path, accessToken, loginCustomerId) {
   return data;
 }
 
-// Runs a GAQL query against a specific customer. Used for both
-// "list MCC children" and "campaigns + metrics" calls. Auto-paginates
-// via searchStream (returns all rows at once when small) — for large
-// result sets we'd switch to the streaming endpoint.
+// Runs a GAQL query against a specific customer. Pages through
+// `nextPageToken` until exhausted. v21 ignores pageSize (returns 10k
+// rows per page) so high-cardinality queries like detail_placement_view
+// need this loop.
 async function adsSearch({ customerId, accessToken, query, loginCustomerId }) {
   const { developerToken } = requireConfig();
   const headers = {
@@ -150,26 +150,30 @@ async function adsSearch({ customerId, accessToken, query, loginCustomerId }) {
     'content-type': 'application/json',
   };
   if (loginCustomerId) headers['login-customer-id'] = normalizeCid(loginCustomerId);
-  // v21 rejects pageSize ("PAGE_SIZE_NOT_SUPPORTED"); the server now
-  // returns a fixed 10000-row page implicitly. nextPageToken still
-  // works the same — keeping the loop just in case.
-  const res = await fetch(
-    `${ADS_API_BASE}/customers/${normalizeCid(customerId)}/googleAds:search`,
-    {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ query }),
-    },
-  );
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const msg = data?.error?.message ?? `HTTP ${res.status}`;
-    const err = new Error(`Google Ads API: ${msg}`);
-    err.code = 'API_ERROR';
-    err.details = data;
-    throw err;
+
+  const url = `${ADS_API_BASE}/customers/${normalizeCid(customerId)}/googleAds:search`;
+  const all = [];
+  let pageToken;
+  let pageCount = 0;
+  // 100 pages = 1M rows — high enough that a real account hitting
+  // this cap means something's wrong with the query.
+  while (pageCount < 100) {
+    const body = pageToken ? { query, pageToken } : { query };
+    const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg = data?.error?.message ?? `HTTP ${res.status}`;
+      const err = new Error(`Google Ads API: ${msg}`);
+      err.code = 'API_ERROR';
+      err.details = data;
+      throw err;
+    }
+    all.push(...(data.results || []));
+    pageCount += 1;
+    if (!data.nextPageToken) break;
+    pageToken = data.nextPageToken;
   }
-  return data.results || [];
+  return all;
 }
 
 async function listAccessibleCustomers(refreshToken) {

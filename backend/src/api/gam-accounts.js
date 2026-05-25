@@ -29,7 +29,8 @@ router.get('/', (req, res) => {
   const rows = db
     .prepare(
       `SELECT id, network_code, account_name, service_account_email, currency,
-              utm_key_id, utm_key_name, status, last_synced_at, created_at,
+              utm_key_id, utm_key_name, utm_placement_key_id, utm_placement_key_name,
+              status, last_synced_at, created_at,
               CASE WHEN service_account_json_enc IS NOT NULL THEN 1 ELSE 0 END AS has_service_account
          FROM gam_accounts
         WHERE ${sql}
@@ -55,6 +56,14 @@ router.patch('/:id', (req, res) => {
   if ('utm_key_name' in body) {
     sets.push('utm_key_name = ?');
     params.push(body.utm_key_name ? String(body.utm_key_name) : null);
+  }
+  if ('utm_placement_key_id' in body) {
+    sets.push('utm_placement_key_id = ?');
+    params.push(body.utm_placement_key_id ? String(body.utm_placement_key_id) : null);
+  }
+  if ('utm_placement_key_name' in body) {
+    sets.push('utm_placement_key_name = ?');
+    params.push(body.utm_placement_key_name ? String(body.utm_placement_key_name) : null);
   }
 
   if ('service_account_json' in body) {
@@ -87,7 +96,7 @@ router.patch('/:id', (req, res) => {
   const row = db
     .prepare(
       `SELECT id, network_code, account_name, service_account_email, currency,
-              utm_key_id, utm_key_name, status,
+              utm_key_id, utm_key_name, utm_placement_key_id, utm_placement_key_name, status,
               CASE WHEN service_account_json_enc IS NOT NULL THEN 1 ELSE 0 END AS has_service_account
          FROM gam_accounts WHERE id = ?`,
     )

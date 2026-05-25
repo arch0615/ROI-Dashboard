@@ -18,6 +18,8 @@ function addColumnIfMissing(table, column, type) {
 try {
   addColumnIfMissing('gam_accounts', 'utm_key_id', 'TEXT');
   addColumnIfMissing('gam_accounts', 'utm_key_name', 'TEXT');
+  addColumnIfMissing('gam_accounts', 'utm_placement_key_id', 'TEXT');
+  addColumnIfMissing('gam_accounts', 'utm_placement_key_name', 'TEXT');
 } catch (err) {
   // Tables may not exist on a fresh DB — that's fine, CREATE TABLE below
   // will use the new shape. Only surfaces when a missing column blocks
@@ -107,6 +109,8 @@ db.exec(`
     currency TEXT,
     utm_key_id TEXT,
     utm_key_name TEXT,
+    utm_placement_key_id TEXT,
+    utm_placement_key_name TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     last_synced_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -277,6 +281,57 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
   CREATE INDEX IF NOT EXISTS idx_alerts_user_unack ON alerts(user_id, acknowledged, created_at DESC);
+
+  -- Per-(campaign, placement, date) Ads cost from GAQL detail_placement_view.
+  -- Lives separate from daily_metrics because the granularity is finer
+  -- and the source is a different GAQL surface.
+  CREATE TABLE IF NOT EXISTS ads_placements (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    google_account_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    campaign_name TEXT,
+    ad_group_id TEXT,
+    ad_group_name TEXT,
+    placement TEXT NOT NULL,
+    placement_clean TEXT,
+    display_name TEXT,
+    target_url TEXT,
+    placement_type TEXT,
+    date TEXT NOT NULL,
+    impressions INTEGER NOT NULL DEFAULT 0,
+    clicks INTEGER NOT NULL DEFAULT 0,
+    cost REAL NOT NULL DEFAULT 0,
+    conversions REAL NOT NULL DEFAULT 0,
+    ctr REAL NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, google_account_id, campaign_id, placement, date),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (google_account_id) REFERENCES google_accounts(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_ads_placements_campaign ON ads_placements(user_id, campaign_id, date);
+  CREATE INDEX IF NOT EXISTS idx_ads_placements_placement ON ads_placements(user_id, placement_clean);
+
+  -- Per-(campaign, placement, date) GAM revenue via two UTM custom dimensions.
+  -- Used by the placements-cleanup preview to attribute revenue exactly to
+  -- the (campaign, placement) pair (vs the single-dimension utm_revenue
+  -- which only attributes to campaign).
+  CREATE TABLE IF NOT EXISTS utm_revenue_placements (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    gam_account_id TEXT NOT NULL,
+    ga_campaign_id TEXT NOT NULL,
+    placement_value TEXT NOT NULL,
+    date TEXT NOT NULL,
+    impressions INTEGER NOT NULL DEFAULT 0,
+    revenue REAL NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, gam_account_id, ga_campaign_id, placement_value, date),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (gam_account_id) REFERENCES gam_accounts(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_utm_rev_pl_campaign ON utm_revenue_placements(user_id, ga_campaign_id, date);
+  CREATE INDEX IF NOT EXISTS idx_utm_rev_pl_placement ON utm_revenue_placements(user_id, placement_value);
 
   CREATE TABLE IF NOT EXISTS sync_logs (
     id TEXT PRIMARY KEY,
