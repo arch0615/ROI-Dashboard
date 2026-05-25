@@ -137,6 +137,32 @@ async function gamJson(url, init) {
   return data;
 }
 
+// Lists every custom targeting key on the network. Each row carries
+// `adTagName` (the URL param name like "utm_placement") + a numeric
+// customTargetingKeyId. Pages through nextPageToken until exhausted.
+async function listCustomTargetingKeys({ networkCode, accessToken }) {
+  const all = [];
+  let pageToken;
+  let pages = 0;
+  while (pages < 20) {
+    const url = new URL(`${GAM_BASE}/networks/${networkCode}/customTargetingKeys`);
+    url.searchParams.set('pageSize', '1000');
+    if (pageToken) url.searchParams.set('pageToken', pageToken);
+    const data = await gamJson(url.toString(), {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const keys = data?.customTargetingKeys ?? [];
+    for (const k of keys) {
+      const id = String(k.customTargetingKeyId ?? (k.name ?? '').split('/').pop() ?? '');
+      if (id) all.push({ id, name: k.name ?? null, adTagName: k.adTagName ?? null, displayName: k.displayName ?? null });
+    }
+    pageToken = data?.nextPageToken;
+    pages += 1;
+    if (!pageToken) break;
+  }
+  return all;
+}
+
 async function fetchNetworkCurrency({ networkCode, accessToken }) {
   const data = await gamJson(`${GAM_BASE}/networks/${networkCode}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -275,5 +301,6 @@ async function runReport({
 module.exports = {
   getAccessToken,
   fetchNetworkCurrency,
+  listCustomTargetingKeys,
   runReport,
 };

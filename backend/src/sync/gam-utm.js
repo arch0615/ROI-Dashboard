@@ -59,7 +59,9 @@ async function syncGamUtm({ userId, accountId, datePreset, from, to }) {
     networkCode: account.network_code,
     accessToken,
     dateRange,
-    dimensions: ['DATE', 'CUSTOM_DIMENSION'],
+    // GAM v1's dimension enum tags each custom-dimension slot by index.
+    // The values come back ordered to match customDimensionKeyIds.
+    dimensions: ['DATE', 'CUSTOM_DIMENSION_0_VALUE'],
     customDimensionKeyIds: [account.utm_key_id],
   });
 

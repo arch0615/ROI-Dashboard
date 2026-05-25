@@ -1,8 +1,9 @@
 const express = require('express');
 const crypto = require('crypto');
 const db = require('../db/database');
-const { encrypt } = require('../lib/crypto');
+const { encrypt, decrypt } = require('../lib/crypto');
 const { inClause } = require('../lib/access');
+const gam = require('../lib/gam');
 
 const router = express.Router();
 
@@ -151,6 +152,90 @@ router.post('/', (req, res) => {
     )
     .get(id);
   res.status(201).json(row);
+});
+
+// Auto-discover Julio's GAM custom targeting keys for utm_campaign +
+// utm_placement. Hits the live customTargetingKeys endpoint with the
+// account's service account, matches by adTagName (case-insensitive),
+// and saves the resolved IDs to gam_accounts. Returns the full list
+// so the admin can manually override if the auto-match picked the
+// wrong key.
+router.post('/:id/discover-utm-keys', async (req, res) => {
+  if (!req.scope.is_admin) return res.status(403).json({ error: 'Apenas administradores' });
+  const account = db
+    .prepare(`SELECT * FROM gam_accounts WHERE id = ? AND user_id = ?`)
+    .get(req.params.id, req.user.id);
+  if (!account) return res.status(404).json({ error: 'Conta GAM não encontrada' });
+  if (!account.service_account_json_enc) {
+    return res.status(400).json({ error: 'Conta GAM sem service_account_json salvo' });
+  }
+  const saJson = decrypt({
+    ciphertext: account.service_account_json_enc,
+    iv: account.service_account_json_iv,
+    tag: account.service_account_json_tag,
+  });
+  let sa;
+  try {
+    sa = JSON.parse(saJson);
+  } catch {
+    return res.status(400).json({ error: 'service_account_json corrompido' });
+  }
+
+  let accessToken;
+  try {
+    accessToken = await gam.getAccessToken(sa);
+  } catch (err) {
+    return res.status(502).json({ error: err.message });
+  }
+
+  let keys;
+  try {
+    keys = await gam.listCustomTargetingKeys({
+      networkCode: account.network_code,
+      accessToken,
+    });
+  } catch (err) {
+    return res.status(502).json({ error: err.message });
+  }
+
+  function findByAdTag(name) {
+    const want = String(name).toLowerCase();
+    return keys.find((k) => String(k.adTagName ?? '').toLowerCase() === want) ?? null;
+  }
+
+  const utmCampaign = findByAdTag('utm_campaign');
+  const utmPlacement = findByAdTag('utm_placement');
+
+  const sets = [];
+  const params = [];
+  if (utmCampaign) {
+    sets.push('utm_key_id = ?', 'utm_key_name = ?');
+    params.push(utmCampaign.id, utmCampaign.adTagName ?? null);
+  }
+  if (utmPlacement) {
+    sets.push('utm_placement_key_id = ?', 'utm_placement_key_name = ?');
+    params.push(utmPlacement.id, utmPlacement.adTagName ?? null);
+  }
+  if (sets.length > 0) {
+    params.push(account.id, req.user.id);
+    db.prepare(
+      `UPDATE gam_accounts SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`,
+    ).run(...params);
+  }
+
+  res.json({
+    network_code: account.network_code,
+    total_keys: keys.length,
+    matched: {
+      utm_campaign: utmCampaign ? { id: utmCampaign.id, ad_tag_name: utmCampaign.adTagName } : null,
+      utm_placement: utmPlacement
+        ? { id: utmPlacement.id, ad_tag_name: utmPlacement.adTagName }
+        : null,
+    },
+    // Return the full list — only first 50 to keep payload small —
+    // so the admin can spot any miss-named keys.
+    keys: keys.slice(0, 50).map((k) => ({ id: k.id, ad_tag_name: k.adTagName })),
+  });
 });
 
 router.delete('/:id', (req, res) => {

@@ -1,26 +1,34 @@
-// Preview of bad placements — the same computation Julio uses to decide
-// which to exclude in Google Ads. READ-ONLY for now (no destructive
-// action). The Apply path lands in a later phase with a safety re-check
-// step. Reading this file:
+// Preview of bad placements — the screen Julio uses to identify which
+// landing pages to exclude in Google Ads. READ-ONLY in this phase.
+// Apply lands later with a safety re-check.
 //
-//   ads_placements          per (campaign, placement, date) cost from
-//                           detail_placement_view (Ads)
-//   utm_revenue_placements  per (campaign_id, placement, date) revenue
-//                           from GAM 2-dim UTM report
+// Attribution model (v2, after Julio's 2026-05-25 bug report):
 //
-// Join on (campaign_id, placement_clean = lower(placement_value)) for the
-// date window. Matched placements get exact ROI. Unmatched placements
-// (cost but no revenue row) get an estimated ROI by attributing the
-// campaign's total unmatched revenue across them weighted by cost.
+//   For each (campaign_id, landing_page_url, date_range) row from GAM
+//   2-dim UTM report:
+//     revenue        = sum revenue   (already net of native FX -> BRL)
+//     impressions    = sum impressions
 //
-// Classification (matches the original tracker):
-//   - cost < min_cost  -> not bad enough to consider, skipped
-//   - matched && roi <= -50%  -> roi_critico
-//   - matched && roi <= max_roi (cfg)  -> roi_baixo
-//   - unmatched && roi_estimated <= max_roi -> sem_match_utm
+//   Then for each campaign present in that set:
+//     total_campaign_imps = sum of impressions over all its landing pages
+//     total_campaign_cost = sum daily_metrics.spend for that campaign
+//                           over the same date range
 //
-// Returns the same shape the original "preview · placements ruins"
-// modal consumes: per-campaign rollup + per-(campaign, placement) detail.
+//   For each landing page within the campaign:
+//     attributed_cost = total_campaign_cost
+//                       * (this_row_impressions / total_campaign_imps)
+//     profit          = revenue * (1 - revenue_share_pct/100) - cost
+//     roi             = profit / attributed_cost * 100
+//
+// Classification (first-match-wins):
+//     cost < min_cost OR days < min_days  -> skipped
+//     roi <= -50%                          -> roi_critico
+//     roi <= max_roi (cfg, default -10%)   -> roi_baixo
+//
+// "sem_match_utm" surfaces orphan cost: campaigns that spent money over
+// the period but have ZERO GAM revenue rows for any landing page — these
+// land in a separate per-campaign list (not per-placement) and the user
+// decides whether to investigate.
 
 const express = require('express');
 const db = require('../db/database');
@@ -29,27 +37,26 @@ const { cleanPlacement } = require('../sync/google-ads-placements');
 
 const router = express.Router();
 
-// Julio's ad URLs follow the format
-//   utm_placement={campaignid}_{placement}
-// where {placement} is Google's auto-expansion (typically host+path).
-// To match against ads_placements.placement_clean (also host+path),
-// strip the leading "<digits>_" then run it through the same cleaner
-// the Ads sync uses.
-function normalizeUtmPlacement(rawValue) {
-  if (!rawValue) return '';
-  const s = String(rawValue).trim();
-  const stripped = s.replace(/^\d{4,}[_:-]/, '');
-  return cleanPlacement(stripped, null);
-}
-
-const DEFAULT_MIN_COST = 20;   // BRL — match original placement_cleanup_min_cost_brl
-const DEFAULT_MAX_ROI = -10;   // % — placement_cleanup_max_roi_pct
-const DEFAULT_MIN_DAYS = 2;    // analysis_days
+const DEFAULT_MIN_COST = 20;
+const DEFAULT_MAX_ROI = -10;
+const DEFAULT_MIN_DAYS = 2;
 
 function daysAgoIso(n) {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() - n);
   return d.toISOString().slice(0, 10);
+}
+
+// Julio's URL scheme tags utm_placement as "campaignid_placement".
+// On the GAM 2-dim sync we now store the raw page URL (the GAM URL
+// dimension) rather than a custom-key value, so the strip is a no-op
+// when there's no leading "\d+_" — kept for backward compat with any
+// older sync that did use utm_placement custom key.
+function normalizeLandingPage(rawValue) {
+  if (!rawValue) return '';
+  const s = String(rawValue).trim();
+  const stripped = s.replace(/^\d{4,}[_:-]/, '');
+  return cleanPlacement(stripped, null);
 }
 
 router.get('/preview', (req, res) => {
@@ -65,185 +72,156 @@ router.get('/preview', (req, res) => {
   const maxRoi = Number(req.query.max_roi ?? DEFAULT_MAX_ROI);
   const minDays = Number(req.query.min_days ?? DEFAULT_MIN_DAYS);
 
-  // Apply revenue-share to GAM revenue when computing ROI, matching the
-  // dashboard's daily_metrics convention.
+  const tenantUserId = req.scope.tenant_user_id ?? req.user.id;
   const rules = db
     .prepare(`SELECT revenue_share_pct FROM rules_config WHERE user_id = ?`)
-    .get(req.scope.tenant_user_id ?? req.user.id);
+    .get(tenantUserId);
   const netFactor = 1 - (rules?.revenue_share_pct ?? 6.5) / 100;
 
-  const gaClause = inClause('ap.google_account_id', req.scope.google_account_ids);
-  const params = [...gaClause.params, from, to];
-
-  // Per-(campaign, placement) cost from Ads. Aggregated across the date
-  // window. Filtered by date and by accessible google_account_ids.
-  const costRows = db
-    .prepare(
-      `SELECT
-         ap.google_account_id,
-         ap.campaign_id,
-         MAX(ap.campaign_name) AS campaign_name,
-         ap.placement,
-         ap.placement_clean,
-         MAX(ap.placement_type) AS placement_type,
-         SUM(ap.clicks) AS clicks,
-         SUM(ap.impressions) AS impressions,
-         SUM(ap.cost) AS cost,
-         COUNT(DISTINCT ap.date) AS days
-       FROM ads_placements ap
-       WHERE ${gaClause.sql}
-         AND ap.date BETWEEN ? AND ?
-       GROUP BY ap.google_account_id, ap.campaign_id, ap.placement_clean`,
-    )
-    .all(...params);
-
-  // Per-(campaign, placement) revenue from GAM via UTM. The raw
-  // placement_value carries the "campaignid_" prefix from Julio's
-  // utm_placement scheme (utm_placement={campaignid}_{placement}); we
-  // run it through normalizeUtmPlacement so both sides of the join end
-  // up in the same "host/path" form. SQL can't safely strip the
-  // numeric prefix, so we group at the row level here in JS.
+  // Per-(campaign, landing_page) GAM revenue. Group at row level here so
+  // we can normalize each placement_value in JS without leaning on SQLite
+  // for URL parsing.
   const rawRevRows = db
     .prepare(
       `SELECT
          u.ga_campaign_id AS campaign_id,
          u.placement_value,
          SUM(u.impressions) AS impressions,
-         SUM(u.revenue) AS revenue
+         SUM(u.revenue) AS revenue,
+         COUNT(DISTINCT u.date) AS days
        FROM utm_revenue_placements u
        WHERE u.user_id = ?
          AND u.date BETWEEN ? AND ?
        GROUP BY u.ga_campaign_id, u.placement_value`,
     )
-    .all(req.scope.tenant_user_id ?? req.user.id, from, to);
+    .all(tenantUserId, from, to);
 
-  // Index revenue rows for O(1) lookup by (campaign_id, normalized
-  // placement). Multiple raw placement_values can normalize to the
-  // same key (e.g. with or without query strings) so we accumulate.
-  const revByKey = new Map();
-  const revRows = [];
+  // Normalize and accumulate by (campaign_id, normalized_url).
+  const perLanding = new Map();
   for (const r of rawRevRows) {
-    const placement_norm = normalizeUtmPlacement(r.placement_value);
-    if (!placement_norm) continue;
-    const key = `${r.campaign_id}|${placement_norm}`;
-    const cur = revByKey.get(key) ?? { campaign_id: r.campaign_id, placement_norm, revenue: 0, impressions: 0 };
+    const norm = normalizeLandingPage(r.placement_value);
+    if (!norm) continue;
+    if (!/^\d{6,}$/.test(String(r.campaign_id))) continue; // skip "(not applicable)" + non-numeric noise
+    const key = `${r.campaign_id}|${norm}`;
+    const cur = perLanding.get(key) ?? {
+      campaign_id: String(r.campaign_id),
+      landing_page: norm,
+      raw_placement: r.placement_value,
+      revenue: 0,
+      impressions: 0,
+      days: 0,
+    };
     cur.revenue += Number(r.revenue) || 0;
     cur.impressions += Number(r.impressions) || 0;
-    revByKey.set(key, cur);
-  }
-  revByKey.forEach((v) => revRows.push(v));
-  // And per-campaign totals so we can attribute the orphan revenue.
-  const revByCampaign = new Map();
-  for (const r of revRows) {
-    const cur = revByCampaign.get(r.campaign_id) ?? { revenue: 0, impressions: 0 };
-    cur.revenue += r.revenue;
-    cur.impressions += r.impressions;
-    revByCampaign.set(r.campaign_id, cur);
+    cur.days = Math.max(cur.days, Number(r.days) || 0);
+    perLanding.set(key, cur);
   }
 
-  // Per-campaign cost totals + orphan-cost totals (used to estimate
-  // revenue per unmatched placement).
-  const costByCampaign = new Map();
-  for (const c of costRows) {
-    const cur = costByCampaign.get(c.campaign_id) ?? {
-      campaign_name: c.campaign_name,
+  // Per-campaign totals over the set of landing pages with revenue.
+  const perCampaign = new Map();
+  for (const v of perLanding.values()) {
+    const c = perCampaign.get(v.campaign_id) ?? {
+      campaign_id: v.campaign_id,
+      revenue: 0,
+      impressions: 0,
       cost: 0,
-      orphan_cost: 0,
-      matched_cost: 0,
+      campaign_name: null,
+      landing_page_count: 0,
     };
-    cur.cost += c.cost;
-    if (revByKey.has(`${c.campaign_id}|${(c.placement_clean || '').toLowerCase()}`)) {
-      cur.matched_cost += c.cost;
-    } else {
-      cur.orphan_cost += c.cost;
-    }
-    costByCampaign.set(c.campaign_id, cur);
+    c.revenue += v.revenue;
+    c.impressions += v.impressions;
+    c.landing_page_count += 1;
+    perCampaign.set(v.campaign_id, c);
   }
 
-  const items = [];
-  for (const c of costRows) {
-    const key = `${c.campaign_id}|${(c.placement_clean || '').toLowerCase()}`;
-    const rev = revByKey.get(key);
-    const cost = c.cost || 0;
-    const matched = !!rev;
-    const grossRevenue = rev ? rev.revenue : 0;
-
-    // Estimated revenue for unmatched placements: orphan_revenue
-    // proportional to this placement's share of the orphan_cost in
-    // its campaign. Same heuristic as the original tracker.
-    const camp = costByCampaign.get(c.campaign_id) ?? { orphan_cost: 0 };
-    const totalRev = revByCampaign.get(c.campaign_id)?.revenue ?? 0;
-    const matchedRevenue = (() => {
-      let sum = 0;
-      for (const [k, r] of revByKey) {
-        if (k.startsWith(`${c.campaign_id}|`)) sum += r.revenue;
+  // Get per-campaign cost and names from daily_metrics + campaigns,
+  // restricted to the caller's scope of google_account_ids.
+  if (perCampaign.size > 0) {
+    const gaClause = inClause('dm.google_account_id', req.scope.google_account_ids);
+    const campaignIds = [...perCampaign.keys()];
+    const idPh = campaignIds.map(() => '?').join(',');
+    const costRows = db
+      .prepare(
+        `SELECT
+           dm.campaign_id,
+           MAX(c.name) AS campaign_name,
+           SUM(dm.spend) AS cost
+         FROM daily_metrics dm
+         LEFT JOIN campaigns c
+           ON c.user_id = dm.user_id
+          AND c.google_account_id = dm.google_account_id
+          AND c.campaign_id = dm.campaign_id
+         WHERE dm.user_id = ?
+           AND dm.campaign_id IN (${idPh})
+           AND dm.date BETWEEN ? AND ?
+           AND ${gaClause.sql}
+         GROUP BY dm.campaign_id`,
+      )
+      .all(tenantUserId, ...campaignIds, from, to, ...gaClause.params);
+    for (const r of costRows) {
+      const c = perCampaign.get(String(r.campaign_id));
+      if (c) {
+        c.cost = Number(r.cost) || 0;
+        c.campaign_name = r.campaign_name;
       }
-      return sum;
-    })();
-    const orphanRevenue = Math.max(0, totalRev - matchedRevenue);
-    const estRevenue =
-      camp.orphan_cost > 0 && !matched
-        ? orphanRevenue * (cost / camp.orphan_cost)
-        : grossRevenue;
-
-    const netRevenue = matched ? grossRevenue * netFactor : estRevenue * netFactor;
-    const profit = netRevenue - cost;
-    const roi = cost > 0 ? (profit / cost) * 100 : 0;
-    const roiExact = cost > 0 ? ((grossRevenue * netFactor - cost) / cost) * 100 : 0;
-
-    // Classification — first match wins.
-    let reason = null;
-    if (cost < minCost) {
-      reason = null; // skipped
-    } else if (c.days < minDays) {
-      reason = null;
-    } else if (matched && roiExact <= -50) {
-      reason = 'roi_critico';
-    } else if (matched && roiExact <= maxRoi) {
-      reason = 'roi_baixo';
-    } else if (!matched && roi <= maxRoi) {
-      reason = 'sem_match_utm';
     }
+  }
+
+  // Build per-(campaign, landing_page) items with attributed cost +
+  // classification.
+  const items = [];
+  for (const v of perLanding.values()) {
+    const camp = perCampaign.get(v.campaign_id);
+    if (!camp || camp.cost <= 0 || camp.impressions <= 0) continue;
+
+    const impShare = v.impressions / camp.impressions;
+    const attributedCost = camp.cost * impShare;
+    const netRevenue = v.revenue * netFactor;
+    const profit = netRevenue - attributedCost;
+    const roi = attributedCost > 0 ? (profit / attributedCost) * 100 : 0;
+
+    let reason = null;
+    if (attributedCost < minCost) reason = null;
+    else if (v.days < minDays) reason = null;
+    else if (roi <= -50) reason = 'roi_critico';
+    else if (roi <= maxRoi) reason = 'roi_baixo';
 
     if (reason) {
       items.push({
-        key,
-        campaign_id: c.campaign_id,
-        campaign_name: c.campaign_name,
-        google_account_id: c.google_account_id,
-        placement: c.placement,
-        placement_clean: c.placement_clean,
-        placement_type: c.placement_type,
-        clicks: c.clicks,
-        impressions: c.impressions,
-        cost,
-        revenue_exact: grossRevenue,
-        revenue_est: matched ? grossRevenue : estRevenue,
+        key: `${v.campaign_id}|${v.landing_page}`,
+        campaign_id: v.campaign_id,
+        campaign_name: camp.campaign_name,
+        placement: v.landing_page,
+        placement_clean: v.landing_page,
+        raw_placement: v.raw_placement,
+        impressions: v.impressions,
+        revenue: v.revenue,
+        cost: attributedCost,
         profit,
-        roi,         // includes estimate for unmatched
-        roi_exact: matched ? roiExact : null,
-        days: c.days,
-        matched,
+        roi,
+        days: v.days,
+        matched: true,
         reason,
       });
     }
   }
+  items.sort((a, b) => b.cost - a.cost);
 
-  // Per-campaign totals for the modal header.
+  // Per-campaign rollup for the modal header.
   const campaignTotals = [];
-  for (const [campaign_id, c] of costByCampaign) {
-    const totalRev = revByCampaign.get(campaign_id)?.revenue ?? 0;
-    const netRev = totalRev * netFactor;
+  for (const c of perCampaign.values()) {
+    const netRev = c.revenue * netFactor;
     const profit = netRev - c.cost;
     const roi = c.cost > 0 ? (profit / c.cost) * 100 : 0;
     campaignTotals.push({
-      campaign_id,
+      campaign_id: c.campaign_id,
       campaign_name: c.campaign_name,
       cost: c.cost,
       revenue_brl: netRev,
       profit,
       roi,
-      bad_count: items.filter((it) => it.campaign_id === campaign_id).length,
+      landing_page_count: c.landing_page_count,
+      bad_count: items.filter((it) => it.campaign_id === c.campaign_id).length,
     });
   }
   campaignTotals.sort((a, b) => b.cost - a.cost);
@@ -251,20 +229,10 @@ router.get('/preview', (req, res) => {
   const stats = {
     period: { from, to },
     cfg: { min_cost: minCost, max_roi: maxRoi, min_days: minDays },
-    ads_rows: costRows.length,
-    gam_rows: revRows.length,
-    placements_analyzed: costRows.length,
+    gam_rev_rows: rawRevRows.length,
+    campaigns_with_revenue: perCampaign.size,
+    landing_pages_analyzed: perLanding.size,
     placements_bad: items.length,
-    placements_matched: costRows.filter((c) =>
-      revByKey.has(`${c.campaign_id}|${(c.placement_clean || '').toLowerCase()}`),
-    ).length,
-    match_pct: (() => {
-      const tot = costRows.length;
-      const m = costRows.filter((c) =>
-        revByKey.has(`${c.campaign_id}|${(c.placement_clean || '').toLowerCase()}`),
-      ).length;
-      return tot === 0 ? 0 : Math.round((m / tot) * 10000) / 100;
-    })(),
   };
 
   res.json({ stats, items, campaign_totals: campaignTotals });

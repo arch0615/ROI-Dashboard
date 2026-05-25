@@ -31,9 +31,9 @@ async function syncGamUtmPlacement({ userId, accountId, datePreset, from, to }) 
     err.code = 'NO_TOKEN';
     throw err;
   }
-  if (!account.utm_key_id || !account.utm_placement_key_id) {
+  if (!account.utm_key_id) {
     const err = new Error(
-      'Conta GAM precisa de utm_key_id E utm_placement_key_id configurados para a atribuição (campanha, placement).',
+      'Conta GAM precisa de utm_key_id (utm_campaign) configurado. Rode discover-utm-keys.',
     );
     err.code = 'NO_UTM_KEY';
     throw err;
@@ -50,12 +50,19 @@ async function syncGamUtmPlacement({ userId, accountId, datePreset, from, to }) 
   const accountCurrency = (account.currency || TARGET_CURRENCY).toUpperCase();
   const dateRange = gamDateRangeFromInput({ datePreset, from, to });
 
+  // Use GAM's built-in URL dimension instead of a second custom-dimension
+  // slot. The publisher's ad code consistently lets the request URL
+  // reach GAM, but doesn't always wire utm_placement into a custom
+  // targeting value — so the custom-key approach returns "(not
+  // applicable)" on most rows. URL is always populated and matches
+  // ads_placements.placement_clean (host+path) after we run it
+  // through the same cleaner.
   const report = await gam.runReport({
     networkCode: account.network_code,
     accessToken,
     dateRange,
-    dimensions: ['DATE', 'CUSTOM_DIMENSION', 'CUSTOM_DIMENSION'],
-    customDimensionKeyIds: [account.utm_key_id, account.utm_placement_key_id],
+    dimensions: ['DATE', 'URL', 'CUSTOM_DIMENSION_0_VALUE'],
+    customDimensionKeyIds: [account.utm_key_id],
   });
 
   // Resolve FX rates per distinct date BEFORE the write transaction.
@@ -101,12 +108,26 @@ async function syncGamUtmPlacement({ userId, accountId, datePreset, from, to }) 
     }
 
     for (const r of report) {
-      const campaignValue = (r.dims[0] || '').trim();
-      const placementValue = (r.dims[1] || '').trim();
-      if (!campaignValue || !placementValue) {
+      // r.dims order matches dimensions[1..] (DATE is r.date).
+      // dims[0] = URL (the page where the ad rendered),
+      // dims[1] = utm_campaign value.
+      const urlValue = (r.dims[0] || '').trim();
+      const campaignValue = (r.dims[1] || '').trim();
+      if (!campaignValue || !urlValue) {
         unmatched += 1;
         continue;
       }
+      // Filter out GAM placeholders for empty cells.
+      if (
+        campaignValue.toLowerCase() === '(not applicable)' ||
+        urlValue.toLowerCase() === '(not applicable)'
+      ) {
+        unmatched += 1;
+        continue;
+      }
+      // Use the URL as the placement_value — joined later on
+      // normalized form (host+path).
+      const placementValue = urlValue;
       const rate = rateByDate.get(r.date);
       const revenueConverted = rate != null ? r.revenue * rate : r.revenue;
       upsert.run({

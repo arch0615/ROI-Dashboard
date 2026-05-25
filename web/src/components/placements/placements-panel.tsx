@@ -11,21 +11,17 @@ type Item = {
   key: string;
   campaign_id: string;
   campaign_name: string | null;
-  google_account_id: string;
   placement: string;
   placement_clean: string | null;
-  placement_type: string | null;
-  clicks: number;
+  raw_placement: string;
   impressions: number;
   cost: number;
-  revenue_exact: number;
-  revenue_est: number;
+  revenue: number;
   profit: number;
   roi: number;
-  roi_exact: number | null;
   days: number;
   matched: boolean;
-  reason: "roi_critico" | "roi_baixo" | "sem_match_utm";
+  reason: "roi_critico" | "roi_baixo";
 };
 
 type CampaignTotal = {
@@ -35,6 +31,7 @@ type CampaignTotal = {
   revenue_brl: number;
   profit: number;
   roi: number;
+  landing_page_count: number;
   bad_count: number;
 };
 
@@ -42,12 +39,10 @@ type Preview = {
   stats: {
     period: { from: string; to: string };
     cfg: { min_cost: number; max_roi: number; min_days: number };
-    ads_rows: number;
-    gam_rows: number;
-    placements_analyzed: number;
-    placements_matched: number;
+    gam_rev_rows: number;
+    campaigns_with_revenue: number;
+    landing_pages_analyzed: number;
     placements_bad: number;
-    match_pct: number;
   };
   items: Item[];
   campaign_totals: CampaignTotal[];
@@ -56,13 +51,11 @@ type Preview = {
 const REASON_LABEL: Record<Item["reason"], string> = {
   roi_critico: "ROI crítico",
   roi_baixo: "ROI baixo",
-  sem_match_utm: "Sem match UTM",
 };
 
 const REASON_STYLE: Record<Item["reason"], string> = {
   roi_critico: "bg-rose-950/60 text-rose-200 border-rose-800",
   roi_baixo: "bg-amber-950/60 text-amber-200 border-amber-800",
-  sem_match_utm: "bg-zinc-800 text-zinc-300 border-zinc-700",
 };
 
 export function PlacementsPanel({
@@ -175,7 +168,6 @@ export function PlacementsPanel({
                 <option value="all">Todos</option>
                 <option value="roi_critico">ROI crítico</option>
                 <option value="roi_baixo">ROI baixo</option>
-                <option value="sem_match_utm">Sem match UTM</option>
               </select>
             </label>
           </div>
@@ -183,13 +175,12 @@ export function PlacementsPanel({
 
         {/* Stats strip */}
         {stats && (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-xs grid grid-cols-2 md:grid-cols-6 gap-y-2 gap-x-6">
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-xs grid grid-cols-2 md:grid-cols-5 gap-y-2 gap-x-6">
             <Stat label="Período" value={`${stats.period.from} → ${stats.period.to}`} />
-            <Stat label="Placements analisados" value={fmtNumber(stats.placements_analyzed)} />
-            <Stat label="Match UTM" value={`${stats.placements_matched} (${stats.match_pct.toFixed(2)}%)`} />
+            <Stat label="Campanhas com receita" value={fmtNumber(stats.campaigns_with_revenue)} />
+            <Stat label="Landing pages analisadas" value={fmtNumber(stats.landing_pages_analyzed)} />
+            <Stat label="Linhas GAM" value={fmtNumber(stats.gam_rev_rows)} />
             <Stat label="Ruins" value={fmtNumber(stats.placements_bad)} highlight />
-            <Stat label="Linhas Ads" value={fmtNumber(stats.ads_rows)} />
-            <Stat label="Linhas GAM" value={fmtNumber(stats.gam_rows)} />
           </div>
         )}
 
@@ -218,11 +209,13 @@ export function PlacementsPanel({
               <table className="w-full text-sm">
                 <thead className="text-xs uppercase tracking-wider text-zinc-500 border-b border-zinc-800">
                   <tr>
-                    <th className="text-left px-4 py-2 font-medium">Campanha / Placement</th>
-                    <th className="text-right px-3 py-2 font-medium">Custo</th>
+                    <th className="text-left px-4 py-2 font-medium">Campanha / Landing page</th>
+                    <th className="text-right px-3 py-2 font-medium" title="Custo atribuído pelo share de impressões">
+                      Custo
+                    </th>
                     <th className="text-right px-3 py-2 font-medium">Receita</th>
                     <th className="text-right px-3 py-2 font-medium">ROI</th>
-                    <th className="text-right px-3 py-2 font-medium">Clicks</th>
+                    <th className="text-right px-3 py-2 font-medium">Imp.</th>
                     <th className="text-right px-3 py-2 font-medium">Dias</th>
                     <th className="text-left px-3 py-2 font-medium">Motivo</th>
                   </tr>
@@ -242,11 +235,7 @@ export function PlacementsPanel({
                         </div>
                       </td>
                       <td className="text-right px-3 py-2 tabular-nums">{fmtCurrency(it.cost)}</td>
-                      <td className="text-right px-3 py-2 tabular-nums">
-                        {it.matched ? fmtCurrency(it.revenue_exact) : (
-                          <span className="text-zinc-500">~{fmtCurrency(it.revenue_est)}</span>
-                        )}
-                      </td>
+                      <td className="text-right px-3 py-2 tabular-nums">{fmtCurrency(it.revenue)}</td>
                       <td
                         className={`text-right px-3 py-2 tabular-nums ${
                           it.roi <= -50 ? "text-rose-300" : "text-amber-300"
@@ -254,7 +243,7 @@ export function PlacementsPanel({
                       >
                         {fmtPercent(it.roi)}
                       </td>
-                      <td className="text-right px-3 py-2 tabular-nums">{fmtNumber(it.clicks)}</td>
+                      <td className="text-right px-3 py-2 tabular-nums">{fmtNumber(it.impressions)}</td>
                       <td className="text-right px-3 py-2 tabular-nums">{it.days}</td>
                       <td className="px-3 py-2">
                         <span
