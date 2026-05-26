@@ -5,6 +5,7 @@ require('./src/db/database');
 
 const healthRouter = require('./src/api/health');
 const authRouter = require('./src/api/auth');
+const authGoogleRouter = require('./src/api/auth-google');
 const oauthRouter = require('./src/api/oauth');
 const googleAccountsRouter = require('./src/api/google-accounts');
 const gamAccountsRouter = require('./src/api/gam-accounts');
@@ -29,6 +30,9 @@ app.use(cookieParser());
 
 app.use('/api/health', healthRouter);
 app.use('/api/auth', authRouter);
+// Google Sign-In — public routes (start + callback). Both arrive from
+// browser redirects, no session cookie needed.
+app.use('/api/auth', authGoogleRouter);
 // OAuth /start is auth-protected at the route level; /callback is
 // intentionally public because the browser arrives from accounts.google.com
 // without our session cookie depending on SameSite policy.

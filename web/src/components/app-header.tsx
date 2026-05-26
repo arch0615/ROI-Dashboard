@@ -27,7 +27,7 @@ export function AppHeader({
     <header className="border-b border-zinc-800 bg-zinc-900/50 backdrop-blur sticky top-0 z-10">
       <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-6">
         <div className="flex items-center gap-6">
-          <h1 className="text-lg font-semibold">ad-genius</h1>
+          <h1 className="text-lg font-semibold">ROI Dashboard</h1>
           <nav className="flex items-center gap-1">
             {visible.map((n) => {
               const active = pathname === n.href;

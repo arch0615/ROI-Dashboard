@@ -21,6 +21,11 @@ try {
   addColumnIfMissing('gam_accounts', 'utm_placement_key_id', 'TEXT');
   addColumnIfMissing('gam_accounts', 'utm_placement_key_name', 'TEXT');
   addColumnIfMissing('ads_creatives', 'final_url', 'TEXT');
+  addColumnIfMissing('users', 'email', 'TEXT');
+  addColumnIfMissing('users', 'google_id', 'TEXT');
+  // Unique only when set — multiple users can have NULL email/google_id.
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL`);
 } catch (err) {
   // Tables may not exist on a fresh DB — that's fine, CREATE TABLE below
   // will use the new shape. Only surfaces when a missing column blocks
