@@ -97,15 +97,14 @@ router.get('/preview', (req, res) => {
     )
     .all(tenantUserId, from, to);
 
-  // Normalize and accumulate by (campaign_id, normalized_url).
-  const perLanding = new Map();
+  // Revenue per normalized URL. We no longer key on ga_campaign_id —
+  // GAM only reports utm_campaign for ~2% of rows in practice, so we
+  // attribute via the URL match against ads_creatives.final_url.
+  const revenueByUrl = new Map();
   for (const r of rawRevRows) {
     const norm = normalizeLandingPage(r.placement_value);
     if (!norm) continue;
-    if (!/^\d{6,}$/.test(String(r.campaign_id))) continue; // skip "(not applicable)" + non-numeric noise
-    const key = `${r.campaign_id}|${norm}`;
-    const cur = perLanding.get(key) ?? {
-      campaign_id: String(r.campaign_id),
+    const cur = revenueByUrl.get(norm) ?? {
       landing_page: norm,
       raw_placement: r.placement_value,
       revenue: 0,
@@ -115,57 +114,59 @@ router.get('/preview', (req, res) => {
     cur.revenue += Number(r.revenue) || 0;
     cur.impressions += Number(r.impressions) || 0;
     cur.days = Math.max(cur.days, Number(r.days) || 0);
-    perLanding.set(key, cur);
+    revenueByUrl.set(norm, cur);
   }
 
-  // Per-campaign totals over the set of landing pages with revenue.
+  // Each Ads campaign has a final_url; group campaign cost+name by URL.
+  const gaClause2 = inClause('ac.google_account_id', req.scope.google_account_ids);
+  const campRows = db
+    .prepare(
+      `SELECT ac.campaign_id, MAX(ac.campaign_name) AS campaign_name,
+              MAX(ac.final_url) AS final_url, SUM(ac.cost) AS cost
+         FROM ads_creatives ac
+        WHERE ${gaClause2.sql}
+          AND ac.date BETWEEN ? AND ?
+        GROUP BY ac.campaign_id`,
+    )
+    .all(...gaClause2.params, from, to);
+
+  // Build (campaign, url) pairs and tally cost per URL for splitting.
+  const perLanding = new Map();
   const perCampaign = new Map();
-  for (const v of perLanding.values()) {
-    const c = perCampaign.get(v.campaign_id) ?? {
-      campaign_id: v.campaign_id,
+  const urlCostTotal = new Map();
+  for (const c of campRows) {
+    const url = cleanPlacement(c.final_url, null);
+    if (!url) continue;
+    urlCostTotal.set(url, (urlCostTotal.get(url) || 0) + (Number(c.cost) || 0));
+    perCampaign.set(String(c.campaign_id), {
+      campaign_id: String(c.campaign_id),
+      campaign_name: c.campaign_name,
+      cost: Number(c.cost) || 0,
+      url,
       revenue: 0,
       impressions: 0,
-      cost: 0,
-      campaign_name: null,
       landing_page_count: 0,
-    };
-    c.revenue += v.revenue;
-    c.impressions += v.impressions;
-    c.landing_page_count += 1;
-    perCampaign.set(v.campaign_id, c);
+    });
   }
 
-  // Get per-campaign cost and names from daily_metrics + campaigns,
-  // restricted to the caller's scope of google_account_ids.
-  if (perCampaign.size > 0) {
-    const gaClause = inClause('dm.google_account_id', req.scope.google_account_ids);
-    const campaignIds = [...perCampaign.keys()];
-    const idPh = campaignIds.map(() => '?').join(',');
-    const costRows = db
-      .prepare(
-        `SELECT
-           dm.campaign_id,
-           MAX(c.name) AS campaign_name,
-           SUM(dm.spend) AS cost
-         FROM daily_metrics dm
-         LEFT JOIN campaigns c
-           ON c.user_id = dm.user_id
-          AND c.google_account_id = dm.google_account_id
-          AND c.campaign_id = dm.campaign_id
-         WHERE dm.user_id = ?
-           AND dm.campaign_id IN (${idPh})
-           AND dm.date BETWEEN ? AND ?
-           AND ${gaClause.sql}
-         GROUP BY dm.campaign_id`,
-      )
-      .all(tenantUserId, ...campaignIds, from, to, ...gaClause.params);
-    for (const r of costRows) {
-      const c = perCampaign.get(String(r.campaign_id));
-      if (c) {
-        c.cost = Number(r.cost) || 0;
-        c.campaign_name = r.campaign_name;
-      }
-    }
+  for (const c of perCampaign.values()) {
+    const u = revenueByUrl.get(c.url);
+    if (!u) continue;
+    const shareCost = urlCostTotal.get(c.url) || 0;
+    const costShare = shareCost > 0 ? c.cost / shareCost : 0;
+    const attributedRev = u.revenue * costShare;
+    const attributedImp = u.impressions * costShare;
+    c.revenue = attributedRev;
+    c.impressions = attributedImp;
+    c.landing_page_count = 1;
+    perLanding.set(`${c.campaign_id}|${c.url}`, {
+      campaign_id: c.campaign_id,
+      landing_page: c.url,
+      raw_placement: u.raw_placement,
+      revenue: attributedRev,
+      impressions: attributedImp,
+      days: u.days,
+    });
   }
 
   // Build per-(campaign, landing_page) items with attributed cost +

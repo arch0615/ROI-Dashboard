@@ -40,6 +40,7 @@ async function syncCreativesForLeaf({ userId, leaf, accessToken, dateClause }) {
       ad_group_ad.ad.id,
       ad_group_ad.ad.name,
       ad_group_ad.ad.type,
+      ad_group_ad.ad.final_urls,
       ad_group_ad.status,
       ad_group_ad.resource_name,
       metrics.impressions,
@@ -68,11 +69,11 @@ async function syncCreativesForLeaf({ userId, leaf, accessToken, dateClause }) {
     INSERT INTO ads_creatives (
       id, user_id, google_account_id, campaign_id, campaign_name,
       ad_group_id, ad_group_name, ad_id, ad_name, ad_type, status,
-      resource_name, date, impressions, clicks, cost, conversions, ctr
+      resource_name, final_url, date, impressions, clicks, cost, conversions, ctr
     ) VALUES (
       @id, @user_id, @google_account_id, @campaign_id, @campaign_name,
       @ad_group_id, @ad_group_name, @ad_id, @ad_name, @ad_type, @status,
-      @resource_name, @date, @impressions, @clicks, @cost, @conversions, @ctr
+      @resource_name, @final_url, @date, @impressions, @clicks, @cost, @conversions, @ctr
     )
     ON CONFLICT(user_id, google_account_id, campaign_id, ad_id, date)
     DO UPDATE SET
@@ -83,6 +84,7 @@ async function syncCreativesForLeaf({ userId, leaf, accessToken, dateClause }) {
       ad_type       = excluded.ad_type,
       status        = excluded.status,
       resource_name = excluded.resource_name,
+      final_url     = excluded.final_url,
       impressions   = excluded.impressions,
       clicks        = excluded.clicks,
       cost          = excluded.cost,
@@ -103,6 +105,9 @@ async function syncCreativesForLeaf({ userId, leaf, accessToken, dateClause }) {
   const writeAll = db.transaction(() => {
     for (const r of results) {
       const adObj = r.adGroupAd?.ad ?? {};
+      const finalUrl = Array.isArray(adObj.finalUrls) && adObj.finalUrls.length
+        ? adObj.finalUrls[0]
+        : null;
       upsert.run({
         id: crypto.randomUUID(),
         user_id: userId,
@@ -116,6 +121,7 @@ async function syncCreativesForLeaf({ userId, leaf, accessToken, dateClause }) {
         ad_type: adObj.type ?? null,
         status: r.adGroupAd?.status ?? null,
         resource_name: r.adGroupAd?.resourceName ?? null,
+        final_url: finalUrl,
         date: r.segments?.date ?? null,
         impressions: Number(r.metrics?.impressions ?? 0),
         clicks: Number(r.metrics?.clicks ?? 0),

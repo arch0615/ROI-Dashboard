@@ -20,6 +20,7 @@ try {
   addColumnIfMissing('gam_accounts', 'utm_key_name', 'TEXT');
   addColumnIfMissing('gam_accounts', 'utm_placement_key_id', 'TEXT');
   addColumnIfMissing('gam_accounts', 'utm_placement_key_name', 'TEXT');
+  addColumnIfMissing('ads_creatives', 'final_url', 'TEXT');
 } catch (err) {
   // Tables may not exist on a fresh DB — that's fine, CREATE TABLE below
   // will use the new shape. Only surfaces when a missing column blocks
@@ -354,6 +355,7 @@ db.exec(`
     ad_type TEXT,
     status TEXT,
     resource_name TEXT,
+    final_url TEXT,
     date TEXT NOT NULL,
     impressions INTEGER NOT NULL DEFAULT 0,
     clicks INTEGER NOT NULL DEFAULT 0,

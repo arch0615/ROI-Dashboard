@@ -25,6 +25,7 @@ const express = require('express');
 const db = require('../db/database');
 const { inClause } = require('../lib/access');
 const { pauseCreatives, undoCreativePause } = require('../sync/creatives-pause');
+const { cleanPlacement } = require('../sync/google-ads-placements');
 
 const router = express.Router();
 
@@ -55,7 +56,8 @@ router.get('/preview', (req, res) => {
 
   const gaClause = inClause('ac.google_account_id', req.scope.google_account_ids);
 
-  // Per-creative aggregates in the window.
+  // Per-creative aggregates in the window. final_url is per-ad — we keep
+  // it on the creative row so we can attribute GAM revenue by URL match.
   const creativeRows = db
     .prepare(
       `SELECT
@@ -67,6 +69,7 @@ router.get('/preview', (req, res) => {
          MAX(ac.ad_type) AS ad_type,
          MAX(ac.status) AS status,
          MAX(ac.resource_name) AS resource_name,
+         MAX(ac.final_url) AS final_url,
          SUM(ac.clicks) AS clicks,
          SUM(ac.impressions) AS impressions,
          SUM(ac.cost) AS cost,
@@ -79,20 +82,29 @@ router.get('/preview', (req, res) => {
     )
     .all(...gaClause.params, from, to);
 
-  // Per-campaign GAM revenue in the window.
-  const campRevRows = db
+  // Per-URL GAM revenue in the window. We attribute by URL because most
+  // of Julio's Ads campaigns don't forward utm_campaign={campaignid},
+  // but every page request reaches GAM with its URL intact.
+  const urlRevRows = db
     .prepare(
-      `SELECT ga_campaign_id, SUM(revenue) AS revenue
+      `SELECT placement_value, SUM(revenue) AS revenue, SUM(impressions) AS impressions
          FROM utm_revenue_placements
         WHERE user_id = ? AND date BETWEEN ? AND ?
-        GROUP BY ga_campaign_id`,
+        GROUP BY placement_value`,
     )
     .all(tenantUserId, from, to);
-  const revenueByCampaign = new Map(
-    campRevRows.map((r) => [r.ga_campaign_id, Number(r.revenue) || 0]),
-  );
+  const revenueByUrl = new Map();
+  for (const r of urlRevRows) {
+    const key = cleanPlacement(r.placement_value, null);
+    if (!key) continue;
+    const cur = revenueByUrl.get(key) ?? { revenue: 0, impressions: 0, claimed_cost: 0 };
+    cur.revenue += Number(r.revenue) || 0;
+    cur.impressions += Number(r.impressions) || 0;
+    revenueByUrl.set(key, cur);
+  }
 
-  // Roll up campaign totals from per-creative data.
+  // First pass: roll up campaign totals AND sum Ads cost per URL so we
+  // can split revenue when multiple campaigns share a landing page.
   const campaigns = new Map();
   for (const c of creativeRows) {
     const cur = campaigns.get(c.campaign_id) ?? {
@@ -102,19 +114,36 @@ router.get('/preview', (req, res) => {
       total_clicks: 0,
       total_impressions: 0,
       total_cost: 0,
+      url_key: null,
       creatives: [],
     };
     cur.total_clicks += Number(c.clicks) || 0;
     cur.total_impressions += Number(c.impressions) || 0;
     cur.total_cost += Number(c.cost) || 0;
+    if (!cur.url_key) cur.url_key = cleanPlacement(c.final_url, null);
     cur.creatives.push(c);
     campaigns.set(c.campaign_id, cur);
+  }
+  // Tally cost per URL across the campaigns targeting it.
+  for (const camp of campaigns.values()) {
+    if (!camp.url_key) continue;
+    const u = revenueByUrl.get(camp.url_key);
+    if (u) u.claimed_cost += camp.total_cost;
   }
 
   const bad = [];
   const campaignTotals = [];
   for (const camp of campaigns.values()) {
-    const grossRevenue = revenueByCampaign.get(camp.campaign_id) ?? 0;
+    // Revenue from the campaign's landing-page URL, split among all
+    // campaigns sharing that URL by their Ads-cost share. Falls back to
+    // 0 when the URL doesn't appear in GAM at all (no monetization).
+    let grossRevenue = 0;
+    if (camp.url_key) {
+      const u = revenueByUrl.get(camp.url_key);
+      if (u && u.claimed_cost > 0) {
+        grossRevenue = u.revenue * (camp.total_cost / u.claimed_cost);
+      }
+    }
     const netRevenue = grossRevenue * netFactor;
     const campProfit = netRevenue - camp.total_cost;
     const campRoi = camp.total_cost > 0 ? (campProfit / camp.total_cost) * 100 : 0;
